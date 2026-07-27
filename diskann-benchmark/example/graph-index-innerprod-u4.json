@@ -1,0 +1,44 @@
+{
+  "search_directories": [
+    "test_data/yfcc"
+  ],
+  "jobs": [
+    {
+      "type": "graph-index-build-sq",
+      "content": {
+        "index_operation": {
+          "source": {
+            "index-source": "Build",
+            "data_type": "float32",
+            "data": "yfcc_10k.fbin",
+            "distance": "inner_product",
+            "max_degree": 32,
+            "l_build": 50,
+            "alpha": 1.2,
+            "backedge_ratio": 1.0,
+            "num_threads": 1,
+            "start_point_strategy": "medoid",
+            "multi_insert": null
+          },
+          "search_phase": {
+            "search-type": "topk",
+            "queries": "yfcc_query_100.fbin",
+            "groundtruth": "groundtruth_ip.bin",
+            "reps": 5,
+            "num_threads": [1],
+            "runs": [
+              {
+                "search_n": 10,
+                "search_l": [20, 40, 60, 80, 100],
+                "recall_k": 10
+              }
+            ]
+          }
+        },
+        "num_bits": 4,
+        "standard_deviations": 2,
+        "use_fp_for_search": false
+      }
+    }
+  ]
+}
