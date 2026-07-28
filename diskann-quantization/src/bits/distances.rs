@@ -2102,6 +2102,99 @@ impl Target2<diskann_wide::arch::x86_64::V3, MathematicalResult<u32>, USlice<'_,
 }
 
 #[cfg(target_arch = "aarch64")]
+impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<'_, 8>, USlice<'_, 4>>
+    for InnerProduct
+{
+    #[inline(always)]
+    fn run(
+        self,
+        arch: diskann_wide::arch::aarch64::Neon,
+        x: USlice<'_, 8>,
+        y: USlice<'_, 4>,
+    ) -> MathematicalResult<u32> {
+        use std::arch::aarch64::{vcombine_u8, vzip1_u8, vzip2_u8};
+        // returns number of quantized vectors
+        let len = check_lengths!(x, y)?;
+
+        diskann_wide::alias!(u8s_16 = <diskann_wide::arch::aarch64::Neon>::u8x16);
+        type u8s_8 = diskann_wide::arch::aarch64::u8x8;
+        diskann_wide::alias!(u32s = <diskann_wide::arch::aarch64::Neon>::u32x4);
+
+        let px_u8: *const u8 = x.as_ptr().cast();
+        let py_u8: *const u8 = y.as_ptr().cast();
+
+        let mut i = 0;
+        let mut s: u32 = 0;
+
+        // number of 8-bit blocks over the underlying slice
+        let x_blocks = len;
+        if i < x_blocks {
+            let mut s0 = u32s::default(arch);
+            let blocks = len / 2;
+
+            #[inline(always)]
+            fn split_and_zip(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_16 {
+                let lo_raw = input.to_underlying();
+                let hi_raw = (input >> 4).to_underlying();
+                u8s_16::from_underlying(
+                    arch,
+                    unsafe { vcombine_u8(vzip1_u8(lo_raw, hi_raw), vzip2_u8(lo_raw, hi_raw)) },
+                ) & u8s_16::splat(arch, 0x0f)
+            }
+
+            while i + 8 <= blocks {
+                // Load 128-bits into 8x16 register
+                // y load is safe since we have verified that 8 bytes
+                // following i are in range [0, y_blocks]
+                let y_vec = split_and_zip(unsafe { u8s_8::load_simd(arch, py_u8.add(i)) }, arch);
+                // x load is safe since (2*i + 16) < 2 * blocks
+                // and 2*blocks <= x_blocks. Hence we can say that 2*i + 16 is in range.
+                let x_vec = unsafe { u8s_16::load_simd(arch, px_u8.add(i*2)) };
+
+                // compute dot product for lower 4 bits, result is stored as 32x4
+                s0 = s0.dot_simd(x_vec, y_vec);
+
+                // repeat for next block
+                i+=8;
+            }
+
+
+            let remaining_blocks = len/2 - i;
+
+            if remaining_blocks > 0 {
+                let x_vec = unsafe {
+                    u8s_16::load_simd_first(arch, px_u8.add(i * 2), remaining_blocks * 2)
+                };
+
+                let y_vec = split_and_zip(unsafe { u8s_8::load_simd_first(arch, py_u8.add(i), remaining_blocks)},
+                    arch
+                );
+
+                s0 = s0.dot_simd(x_vec, y_vec);
+            }
+            i+= remaining_blocks;
+            s = (s0).sum_tree() as u32;
+        }
+                
+
+        // Convert bytes to nibble indexes.
+        i *= 2;
+
+        // Deal with the remainder the slow way (at most 1 element).
+        debug_assert!(len - i <= 1);
+        if i != len {
+            // SAFETY: `i` is guaranteed to be less than `x.len()`.
+           let ix = unsafe { x.get_unchecked(i) } as u32;
+            // SAFETY: `i` is guaranteed to be less than `y.len()`.
+            let iy = unsafe { y.get_unchecked(i) } as u32;
+            s += (ix * iy) as u32;
+        }
+
+        Ok(MV::new(s))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 retarget!(
     diskann_wide::arch::aarch64::Neon,
     InnerProduct,
@@ -2111,7 +2204,6 @@ retarget!(
     4,
     3,
     2,
-    (8, 4),
     (8, 2),
     (8, 1)
 );
