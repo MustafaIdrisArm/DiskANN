@@ -114,6 +114,11 @@ use diskann_wide::{
     SIMDCast, SIMDDotProduct, SIMDMulAdd, SIMDReinterpret, SIMDSumTree, SIMDVector,
 };
 
+#[cfg(target_arch = "aarch64")]
+use diskann_wide::{
+    SIMDDotProduct, SIMDSumTree, SIMDVector,
+};
+
 use super::{Binary, BitSlice, BitTranspose, Dense, Representation, Unsigned};
 use crate::distances::{Hamming, InnerProduct, MV, MathematicalResult, SquaredL2, check_lengths};
 
@@ -1588,67 +1593,64 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
         let mut i = 0;
         let mut s: u32 = 0;
 
-        // number of 8-bit blocks over the underlying slice
-        let blocks = len.div_ceil(2);
-        if i < blocks {
+        // number of bytes over the underlying slice
+        let bytes = len/2;
+        if i < bytes {
             let mut s0 = u32s::default(arch);
             let mut s1 = u32s::default(arch);
             let mask = u8s::splat(arch, 0x0f);
-            while i + 16 < blocks {
+            while i + 16 <= bytes {
                 // Load 128-bits into 8x16 register
                 // both operations are safe since we verified that
-                // both pointers (of equal length) have > 16 blocks available
+                // both pointers (of equal length) have >= 16 bytes available
                 // from the offset `i`
                 let x_vec = unsafe { u8s::load_simd(arch, px_u8.add(i)) };
                 let y_vec = unsafe { u8s::load_simd(arch, py_u8.add(i)) };
 
                 // compute dot product for lower 4 bits, result is stored as 32x4
-                let lower_x: u8s = x_vec & mask;
-                let lower_y: u8s = y_vec & mask;
-                s0 = s0.dot_simd(lower_x, lower_y);
+                let first_x: u8s = x_vec & mask;
+                let first_y: u8s = y_vec & mask;
+                s0 = s0.dot_simd(first_x, first_y);
 
                 // compute dot product for upper 4 bits, result is stored as 32x4
-                let upper_x: u8s = (x_vec >> 4) & mask;
-                let upper_y: u8s = (y_vec >> 4) & mask;
-                s1 = s1.dot_simd(upper_x, upper_y);
-
+                let second_x: u8s = (x_vec >> 4) & mask;
+                let second_y: u8s = (y_vec >> 4) & mask;
+                s1 = s1.dot_simd(second_x, second_y);
                 // repeat for next block
                 i+=16;
             }
 
-            let remaining_blocks = len/2 - i;
+            let remaining_bytes = len/2 - i;
 
-            if remaining_blocks > 0 {
-                let x_vec = unsafe { u8s::load_simd_first(arch, px_u8.add(i), remaining_blocks) };
-                let y_vec = unsafe { u8s::load_simd_first(arch, py_u8.add(i), remaining_blocks) };
+            if remaining_bytes > 0 {
+                let remaining_vec1 = remaining_bytes.min(16);
+                let x_vec = unsafe { u8s::load_simd_first(arch, px_u8.add(i), remaining_vec1) };
+                let y_vec = unsafe { u8s::load_simd_first(arch, py_u8.add(i), remaining_vec1) };
 
-                // compute dot product for lower 4 bits, result is stored as 32x4
-                let lower_x: u8s = x_vec & mask;
-                let lower_y: u8s = y_vec & mask;
-                s0 = s0.dot_simd(lower_x, lower_y);
+                let first_x: u8s = x_vec & mask;
+                let first_y: u8s = y_vec & mask;
+                s0 = s0.dot_simd(first_x, first_y);
 
                 // compute dot product for upper 4 bits, result is stored as 32x4
-                let upper_x: u8s = (x_vec >> 4) & mask;
-                let upper_y: u8s = (y_vec >> 4) & mask;
-                s1 = s1.dot_simd(upper_x, upper_y);
-
+                let second_x: u8s = (x_vec >> 4) & mask;
+                let second_y: u8s = (y_vec >> 4) & mask;
+                s1 = s1.dot_simd(second_x, second_y);
+                i+= remaining_bytes;
             }
-            i+= remaining_blocks;
-            s = ((s0 + s1)).sum_tree() as u32;
+            s = (s0 + s1).sum_tree() as u32;
         }
-                
-
         // Convert bytes to nibble indexes.
         i *= 2;
 
         // Deal with the remainder the slow way (at most 1 element).
         debug_assert!(len - i <= 1);
+
         if i != len {
             // SAFETY: `i` is guaranteed to be less than `x.len()`.
            let ix = unsafe { x.get_unchecked(i) } as i32;
             // SAFETY: `i` is guaranteed to be less than `y.len()`.
             let iy = unsafe { y.get_unchecked(i) } as i32;
-            s += (ix + iy) as u32;
+            s += (ix * iy) as u32;
         }
 
         Ok(MV::new(s))
@@ -1667,7 +1669,6 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
         y: USlice<'_, 2>,
     ) -> MathematicalResult<u32> {
         // returns number of quantized vectors
-        use std::arch::aarch64::vabdq_u8;
         let len = check_lengths!(x, y)?;
 
         diskann_wide::alias!(u8s = <diskann_wide::arch::aarch64::Neon>::u8x16);
@@ -1679,18 +1680,18 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
         let mut i = 0;
         let mut s: u32 = 0;
 
-        // number of 8-bit blocks over the underlying slice
-        let blocks = len.div_ceil(4);
-        if i < blocks {
+        // number of bytes over the underlying slice
+        let bytes = len/4;
+        if i < bytes {
             let mut s0 = u32s::default(arch);
             let mut s1 = u32s::default(arch);
             let mut s2 = u32s::default(arch);
             let mut s3 = u32s::default(arch);
             let mask = u8s::splat(arch, 0x03);
-            while i + 16 < blocks {
+            while i + 16 <= bytes {
                 // Load 128-bits into 8x16 register
                 // both operations are safe since we verified that
-                // both pointers (of equal length) have > 16 blocks available
+                // both pointers (of equal length) have >= 16 bytes available
                 // from the offset `i`
                 let x_vec = unsafe { u8s::load_simd(arch, px_u8.add(i)) };
                 let y_vec = unsafe { u8s::load_simd(arch, py_u8.add(i)) };
@@ -1718,11 +1719,11 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
                 i+=16;
             }
 
-            let remaining_blocks = len/4 - i;
+            let remaining_bytes = len/4 - i;
 
-            if remaining_blocks > 0 {
-                let x_vec = unsafe { u8s::load_simd_first(arch, px_u8.add(i), remaining_blocks) };
-                let y_vec = unsafe { u8s::load_simd_first(arch, py_u8.add(i), remaining_blocks) };
+            if remaining_bytes > 0 {
+                let x_vec = unsafe { u8s::load_simd_first(arch, px_u8.add(i), remaining_bytes) };
+                let y_vec = unsafe { u8s::load_simd_first(arch, py_u8.add(i), remaining_bytes) };
 
                 let first_x: u8s = x_vec & mask;
                 let first_y: u8s = y_vec & mask;
@@ -1740,8 +1741,8 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
                 let fourth_x: u8s = (x_vec >> 6) & mask;
                 let fourth_y: u8s = (y_vec >> 6) & mask;
                 s3 = s3.dot_simd(fourth_x, fourth_y);
+                i+= remaining_bytes;
             }
-            i+= remaining_blocks;
             s = ((s0 + s1) + (s2 + s3)).sum_tree() as u32;
         }
 
@@ -1759,7 +1760,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
                     let ix = unsafe { x.get_unchecked(i) } as i32;
                     // SAFETY: `i` is guaranteed to be less than `y.len()`.
                     let iy = unsafe { y.get_unchecked(i) } as i32;
-                    s += ix + iy;
+                    s += ix * iy;
                 }
                 s as u32
             }
