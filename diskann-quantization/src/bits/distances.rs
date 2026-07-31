@@ -114,6 +114,11 @@ use diskann_wide::{
     SIMDCast, SIMDDotProduct, SIMDMulAdd, SIMDReinterpret, SIMDSumTree, SIMDVector,
 };
 
+#[cfg(target_arch = "aarch64")]
+use diskann_wide::{
+    SIMDDotProduct, SIMDSumTree, SIMDVector,
+};
+
 use super::{Binary, BitSlice, BitTranspose, Dense, Representation, Unsigned};
 use crate::distances::{Hamming, InnerProduct, MV, MathematicalResult, SquaredL2, check_lengths};
 
@@ -2126,54 +2131,57 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
         let mut i = 0;
         let mut s: u32 = 0;
 
-        // number of 8-bit blocks over the underlying slice
-        let x_blocks = len;
-        if i < x_blocks {
+        // number of y bytes over the underlying slice
+        let y_bytes = len / 2;
+        if i < y_bytes {
             let mut s0 = u32s::default(arch);
-            let blocks = len / 2;
 
             #[inline(always)]
             fn split_and_zip(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_16 {
                 let lo_raw = input.to_underlying();
                 let hi_raw = (input >> 4).to_underlying();
+                // SAFETY: both lo_raw and hi_raw are valid u8x8 values
+                // vzip are safe to call with 8x8 vectors and return an 8x8 vector.
+                // combine_u8 combines two 8x8 vectors in 8x16 vector.
                 u8s_16::from_underlying(
                     arch,
                     unsafe { vcombine_u8(vzip1_u8(lo_raw, hi_raw), vzip2_u8(lo_raw, hi_raw)) },
                 ) & u8s_16::splat(arch, 0x0f)
             }
 
-            while i + 8 <= blocks {
-                // Load 128-bits into 8x16 register
+            while i + 8 <= y_bytes {
+                // Load 8 bytes into 8x16 register
                 // y load is safe since we have verified that 8 bytes
-                // following i are in range [0, y_blocks]
+                // following i are in range
                 let y_vec = split_and_zip(unsafe { u8s_8::load_simd(arch, py_u8.add(i)) }, arch);
-                // x load is safe since (2*i + 16) < 2 * blocks
-                // and 2*blocks <= x_blocks. Hence we can say that 2*i + 16 is in range.
+                // x load is safe since (2*i + 16) <= 2 * y_bytes
+                // and 2*y_bytes == x_bytes. Hence we can say that 2*i + 16 is in range.
                 let x_vec = unsafe { u8s_16::load_simd(arch, px_u8.add(i*2)) };
 
                 // compute dot product for lower 4 bits, result is stored as 32x4
                 s0 = s0.dot_simd(x_vec, y_vec);
 
-                // repeat for next block
+                // repeat for next 8 byte block of y and 16 byte block of x
                 i+=8;
             }
 
 
-            let remaining_blocks = len/2 - i;
+            let remaining_bytes = len/2 - i;
 
-            if remaining_blocks > 0 {
+            if remaining_bytes > 0 {
+                // SAFETY: less than 8 bytes remain of y, we infer that less than 16 remain of x.
                 let x_vec = unsafe {
-                    u8s_16::load_simd_first(arch, px_u8.add(i * 2), remaining_blocks * 2)
+                    u8s_16::load_simd_first(arch, px_u8.add(i * 2), remaining_bytes * 2)
                 };
 
-                let y_vec = split_and_zip(unsafe { u8s_8::load_simd_first(arch, py_u8.add(i), remaining_blocks)},
+                let y_vec = split_and_zip(unsafe { u8s_8::load_simd_first(arch, py_u8.add(i), remaining_bytes)},
                     arch
                 );
 
                 s0 = s0.dot_simd(x_vec, y_vec);
+                i+= remaining_bytes;
             }
-            i+= remaining_blocks;
-            s = (s0).sum_tree() as u32;
+            s = s0.sum_tree() as u32;
         }
                 
 
