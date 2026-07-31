@@ -736,21 +736,21 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
         let mut i = 0;
         let mut s: u32 = 0;
 
-        // number of 8-bit blocks over the underlying slice
-        let blocks = len.div_ceil(2);
-        if i < blocks {
+        // number of bytes over the underlying slice
+        let bytes = len/2;
+        if i < bytes {
             let mut s0 = u32s::default(arch);
             let mut s1 = u32s::default(arch);
             let mask = u8s::splat(arch, 0x0f);
-            while i + 16 < blocks {
+            while i + 16 <= bytes {
                 // Load 128-bits into 8x16 register
                 // both operations are safe since we verified that
-                // both pointers (of equal length) have > 16 blocks available
+                // both pointers (of equal length) have >= 16 bytes available
                 // from the offset `i`
                 let x_vec = unsafe { u8s::load_simd(arch, px_u8.add(i)) };
                 let y_vec = unsafe { u8s::load_simd(arch, py_u8.add(i)) };
 
-                // compute dot product for lower 4 bits, result is stored as 32x4
+                // compute abs diff then dot product for lower 4 bits, result is stored as 32x4
                 let lower_x: u8s = x_vec & mask;
                 let lower_y: u8s = y_vec & mask;
                 let d = u8s::from_underlying (
@@ -759,7 +759,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
                 );
                 s0 = s0.dot_simd(d, d);
 
-                // compute dot product for upper 4 bits, result is stored as 32x4
+                // compute abs diff then dot product for upper 4 bits, result is stored as 32x4
                 let upper_x: u8s = (x_vec >> 4) & mask;
                 let upper_y: u8s = (y_vec >> 4) & mask;
                 let d = u8s::from_underlying (
@@ -768,17 +768,17 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
                 );
                 s1 = s1.dot_simd(d, d);
 
-                // repeat for next block
+                // repeat for next 16 bytes block
                 i+=16;
             }
 
-            let remaining_blocks = len/2 - i;
+            let remaining_bytes = len/2 - i;
 
-            if remaining_blocks > 0 {
-                let x_vec = unsafe { u8s::load_simd_first(arch, px_u8.add(i), remaining_blocks) };
-                let y_vec = unsafe { u8s::load_simd_first(arch, py_u8.add(i), remaining_blocks) };
+            if remaining_bytes > 0 {
+                let x_vec = unsafe { u8s::load_simd_first(arch, px_u8.add(i), remaining_bytes) };
+                let y_vec = unsafe { u8s::load_simd_first(arch, py_u8.add(i), remaining_bytes) };
 
-                // compute dot product for lower 4 bits, result is stored as 32x4
+                // compute abs diff then dot product for lower 4 bits, result is stored as 32x4
                 let lower_x: u8s = x_vec & mask;
                 let lower_y: u8s = y_vec & mask;
                 let d = u8s::from_underlying (
@@ -787,7 +787,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
                 );
                 s0 = s0.dot_simd(d, d);
 
-                // compute dot product for upper 4 bits, result is stored as 32x4
+                // compute abs diff then dot product for upper 4 bits, result is stored as 32x4
                 let upper_x: u8s = (x_vec >> 4) & mask;
                 let upper_y: u8s = (y_vec >> 4) & mask;
                 let d = u8s::from_underlying (
@@ -796,10 +796,9 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
                 );
                 s1 = s1.dot_simd(d, d);
 
-                i+= remaining_blocks;
-
-                s = ((s0 + s1)).sum_tree() as u32;
+                i+= remaining_bytes;
             }
+            s = (s0 + s1).sum_tree() as u32;
         }
 
         // Convert bytes to nibble indexes.
