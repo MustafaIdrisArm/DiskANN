@@ -3,21 +3,59 @@
  * Licensed under the MIT license.
  */
 
-//! Explicitly instantiate the AArch64 Neon spherical inner-product path for
-//! 4-bit data against 4-bit data.
+//! Explicitly instantiate the AArch64 Neon spherical inner-product paths for
+//! four-bit data-to-data and query-to-data distance computations.
 
 use diskann_wide::arch::aarch64::Neon;
 
 use crate::{
     alloc::{AllocatorError, GlobalAllocator},
     spherical::{
-        iface::{AsData, DistanceComputer, Reify},
+        iface::{AsData, AsQuery, DistanceComputer, Reify},
         vectors,
     },
 };
 
-/// Register the Neon implementation of spherical inner product for
-/// `USlice<'_, 4> × USlice<'_, 4>`.
+/// Instantiate the Neon inner-product implementation for
+/// `USlice<'_, 2> × USlice<'_, 2>` in the data-to-data path.
+#[inline(never)]
+pub fn twobit_neon_ip_data_data(
+    arch: Neon,
+    shift: &[f32],
+    dim: usize,
+) -> Result<DistanceComputer, AllocatorError> {
+    let reify = Reify::<_, _, AsData<2>, AsData<2>>::new(
+        vectors::CompensatedIP::new(shift, dim),
+        dim,
+        arch,
+    );
+
+    DistanceComputer::new(reify, GlobalAllocator)
+}
+
+/// Instantiate the Neon inner-product implementation for the four-bit
+/// query-to-data path.
+///
+/// This corresponds to:
+///
+/// `dispatch_map!(2, AsQuery<2>, Neon);`
+#[inline(never)]
+pub fn twobit_neon_ip_query_data(
+    arch: Neon,
+    shift: &[f32],
+    dim: usize,
+) -> Result<DistanceComputer, AllocatorError> {
+    let reify = Reify::<_, _, AsQuery<2>, AsData<2>>::new(
+        vectors::CompensatedIP::new(shift, dim),
+        dim,
+        arch,
+    );
+
+    DistanceComputer::new(reify, GlobalAllocator)
+}
+
+/// Instantiate the Neon inner-product implementation for
+/// `USlice<'_, 4> × USlice<'_, 4>` in the data-to-data path.
 #[inline(never)]
 pub fn fourbit_neon_ip_data_data(
     arch: Neon,
@@ -25,6 +63,27 @@ pub fn fourbit_neon_ip_data_data(
     dim: usize,
 ) -> Result<DistanceComputer, AllocatorError> {
     let reify = Reify::<_, _, AsData<4>, AsData<4>>::new(
+        vectors::CompensatedIP::new(shift, dim),
+        dim,
+        arch,
+    );
+
+    DistanceComputer::new(reify, GlobalAllocator)
+}
+
+/// Instantiate the Neon inner-product implementation for the four-bit
+/// query-to-data path.
+///
+/// This corresponds to:
+///
+/// `dispatch_map!(4, AsQuery<4>, Neon);`
+#[inline(never)]
+pub fn fourbit_neon_ip_query_data(
+    arch: Neon,
+    shift: &[f32],
+    dim: usize,
+) -> Result<DistanceComputer, AllocatorError> {
+    let reify = Reify::<_, _, AsQuery<4>, AsData<4>>::new(
         vectors::CompensatedIP::new(shift, dim),
         dim,
         arch,
