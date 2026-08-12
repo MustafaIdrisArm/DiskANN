@@ -2781,6 +2781,175 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
 }
 
 #[cfg(target_arch = "aarch64")]
+impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<'_, 8>, USlice<'_, 1>>
+    for InnerProduct
+{
+    #[inline(always)]
+    fn run(
+        self,
+        arch: diskann_wide::arch::aarch64::Neon,
+        x: USlice<'_, 8>,
+        y: USlice<'_, 1>,
+    ) -> MathematicalResult<u32> {
+        // returns number of quantized vectors
+        let len = check_lengths!(x, y)?;
+
+        #[allow(non_camel_case_types)]
+        type u8s_8 = diskann_wide::arch::aarch64::u8x8;
+        diskann_wide::alias!(u8s_16 = <diskann_wide::arch::aarch64::Neon>::u8x16);
+        diskann_wide::alias!(u8s_32 = <diskann_wide::arch::aarch64::Neon>::u8x32);
+        diskann_wide::alias!(u32s = <diskann_wide::arch::aarch64::Neon>::u32x4);
+
+        let px_u8: *const u8 = x.as_ptr().cast();
+        let py_u8: *const u8 = y.as_ptr().cast();
+
+        let mut i = 0;
+        let mut s: u32 = 0;
+
+        #[inline(always)]
+        fn split_and_zip_four_bits(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_16 {
+            use diskann_wide::{LoHi, ZipUnzip};
+            let lo = input;
+            let hi = input >> 4;
+            let halves = LoHi::new(lo, hi);
+            let zipped_halves = u8s_16::zip(halves);
+            zipped_halves & u8s_16::splat(arch, 0x0f)
+        }
+
+        #[inline(always)]
+        fn split_and_zip_two_bits(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> (u8s_16, u8s_16) {
+            use diskann_wide::{LoHi, SplitJoin, ZipUnzip};
+            let four_bit_split = split_and_zip_four_bits(input, arch);
+            let lo = four_bit_split;
+            let hi = four_bit_split >> 2;
+            let zipped = u8s_32::zip(LoHi::new(lo, hi));
+            let LoHi { lo, hi } = zipped.split();
+            let mask = u8s_16::splat(arch, 0x03);
+            (lo & mask, hi & mask)
+        }
+
+        #[inline(always)]
+        fn split_and_zip_one_bit(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> (u8s_16, u8s_16, u8s_16, u8s_16) {
+            use diskann_wide::{LoHi, SplitJoin, ZipUnzip};
+            let (lower_two_bits, upper_two_bits) = split_and_zip_two_bits(input, arch);
+            let vec1_lo = lower_two_bits;
+            let vec1_hi = lower_two_bits >> 1;
+            let vec2_lo = upper_two_bits;
+            let vec2_hi = upper_two_bits >> 1;
+            let vec1_zipped = u8s_32::zip(LoHi::new(vec1_lo, vec1_hi));
+            let vec2_zipped = u8s_32::zip(LoHi::new(vec2_lo, vec2_hi));
+            let LoHi { lo: vec1_lo, hi: vec1_hi } = vec1_zipped.split();
+            let LoHi { lo: vec2_lo, hi: vec2_hi } = vec2_zipped.split();
+            let mask = u8s_16::splat(arch, 0x01);
+            (vec1_lo & mask, vec1_hi & mask, vec2_lo & mask, vec2_hi & mask)
+        }
+
+        let y_bytes = len / 8; // number of y bytes over the underlying slice
+        if i < y_bytes {
+            let mut s0 = u32s::default(arch);
+            let mut s1 = u32s::default(arch);
+            let mut s2 = u32s::default(arch);
+            let mut s3 = u32s::default(arch);
+
+            while i + 8 <= y_bytes {
+                // SAFETY: `i +8 < y_bytes` guarantees that 8 bytes from `py_u8` are readable at offset `i`.
+                let (y_vec1, y_vec2, y_vec3, y_vec4) = split_and_zip_one_bit( unsafe { u8s_8::load_simd(arch, py_u8.add(i))}, arch);
+
+                // both loads are safe since 8 * i + 64 < y_bytes * 8 = x_bytes
+                // hence since 8*i >= 0 we are within the boundary [0, x_bytes]
+                // if we load 64 bytes from offset 8*i.
+                let x_vec1 = unsafe { u8s_16::load_simd(arch, px_u8.add(8*i)) };
+                let x_vec2 = unsafe { u8s_16::load_simd(arch, px_u8.add(8*i+16)) };
+                let x_vec3 = unsafe { u8s_16::load_simd(arch, px_u8.add(8*i+32)) };
+                let x_vec4 = unsafe { u8s_16::load_simd(arch, px_u8.add(8*i+48)) };
+
+                // compute dot product for first 16 logical elements
+                s0 = s0.dot_simd(x_vec1, y_vec1);
+
+                // compute dot product for next 16 logical elements
+                s1 = s1.dot_simd(x_vec2, y_vec2);
+
+                // compute dot product for next 16 logical elements
+                s2 = s2.dot_simd(x_vec3, y_vec3);
+
+                // compute dot product for last 16 logical elements
+                s3 = s3.dot_simd(x_vec4, y_vec4);
+
+                // repeat for next block
+                i+=8;
+            }
+
+            let remaining_y_bytes = len/8 - i;
+            let remaining_x_bytes = remaining_y_bytes * 8;
+
+            if remaining_y_bytes > 0 {
+                // Load 64-bits into 8x8 register
+                // y load is safe since we have verified that 8 bytes
+                // following i are in range [0, y_blocks]
+                let (y_vec1, y_vec2, y_vec3, y_vec4) = split_and_zip_one_bit( unsafe { u8s_8::load_simd_first(arch, py_u8.add(i), remaining_y_bytes)}, arch);
+
+                // both loads are safe since we are accessing logical elements
+                // [32i, 32i+32] and since i < blocks = len / 32
+                let x_first = remaining_x_bytes.min(16);
+                let x_second = remaining_x_bytes.saturating_sub(16).min(16);
+                let x_third = remaining_x_bytes.saturating_sub(32).min(16);
+                let x_fourth = remaining_x_bytes.saturating_sub(48).min(16);
+
+
+                let x_vec1 = unsafe { u8s_16::load_simd_first(arch, px_u8.add(i*8), x_first) };
+                s0 = s0.dot_simd(x_vec1, y_vec1);
+
+                if x_second > 0 {
+                    let x_vec2 = unsafe {
+                        u8s_16::load_simd_first(arch, px_u8.add(i * 8 + 16), x_second)
+                    };
+                    s1 = s1.dot_simd(x_vec2, y_vec2);
+                }
+
+                if x_third > 0 {
+                    let x_vec3 = unsafe {
+                        u8s_16::load_simd_first(arch, px_u8.add(i * 8 + 32), x_third)
+                    };
+                    s2 = s2.dot_simd(x_vec3, y_vec3);
+                }
+
+                if x_fourth > 0 {
+                    let x_vec4 = unsafe {
+                        u8s_16::load_simd_first(arch, px_u8.add(i * 8 + 48), x_fourth)
+                    };
+                    s3 = s3.dot_simd(x_vec4, y_vec4);
+                }
+
+                i += remaining_y_bytes;
+            }
+            s = ((s0 + s1) + (s2 + s3)).sum_tree() as u32;
+        }
+
+        // converting from y bytes to logical elements.
+        i *= 8;
+
+        // Deal with the remainder the slow way (at most 7 element).
+        debug_assert!(len - i <= 7);
+        if i != len {
+            #[inline(never)]
+            fn fallback(x: USlice<'_, 8>, y: USlice<'_, 1>, from: usize) -> u32 {
+                let mut s: u32 = 0;
+                for i in from..x.len() {
+                    // SAFETY: `i` is in `from..x.len()`, which equals `y.len()`.
+                    let (ix, iy) =
+                        unsafe { (x.get_unchecked(i) as u32, y.get_unchecked(i) as u32) };
+                    s += ix * iy;
+                }
+                s
+            }
+            s += fallback(x, y, i)
+        }
+
+        Ok(MV::new(s))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 retarget!(
     diskann_wide::arch::aarch64::Neon,
     InnerProduct,
@@ -2788,7 +2957,6 @@ retarget!(
     6,
     5,
     3,
-    (8, 1)
 );
 
 //////////////////
