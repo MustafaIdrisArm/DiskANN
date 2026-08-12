@@ -2573,11 +2573,11 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
         x: USlice<'_, 8>,
         y: USlice<'_, 4>,
     ) -> MathematicalResult<u32> {
-        use std::arch::aarch64::{vcombine_u8, vzip1_u8, vzip2_u8};
         // returns number of quantized vectors
         let len = check_lengths!(x, y)?;
 
         diskann_wide::alias!(u8s_16 = <diskann_wide::arch::aarch64::Neon>::u8x16);
+        #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
         diskann_wide::alias!(u32s = <diskann_wide::arch::aarch64::Neon>::u32x4);
 
@@ -2594,15 +2594,12 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
 
             #[inline(always)]
             fn split_and_zip(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_16 {
-                let lo_raw = input.to_underlying();
-                let hi_raw = (input >> 4).to_underlying();
-                // SAFETY: both lo_raw and hi_raw are valid u8x8 values
-                // vzip are safe to call with 8x8 vectors and return an 8x8 vector.
-                // combine_u8 combines two 8x8 vectors in 8x16 vector.
-                u8s_16::from_underlying(
-                    arch,
-                    unsafe { vcombine_u8(vzip1_u8(lo_raw, hi_raw), vzip2_u8(lo_raw, hi_raw)) },
-                ) & u8s_16::splat(arch, 0x0f)
+                use diskann_wide::{LoHi, ZipUnzip};
+                let lo = input;
+                let hi = input >> 4;
+                let halves = LoHi::new(lo, hi);
+                let zipped_halves = u8s_16::zip(halves);
+                zipped_halves & u8s_16::splat(arch, 0x0f)
             }
 
             while i + 8 <= y_bytes {
@@ -2669,12 +2666,13 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
         x: USlice<'_, 8>,
         y: USlice<'_, 2>,
     ) -> MathematicalResult<u32> {
-        use std::arch::aarch64::{vcombine_u8, vzip1_u8, vzip2_u8, vzip1q_u8, vzip2q_u8};
         // returns number of quantized vectors
         let len = check_lengths!(x, y)?;
 
+        #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
         diskann_wide::alias!(u8s_16 = <diskann_wide::arch::aarch64::Neon>::u8x16);
+        diskann_wide::alias!(u8s_32 = <diskann_wide::arch::aarch64::Neon>::u8x32);
         diskann_wide::alias!(u32s = <diskann_wide::arch::aarch64::Neon>::u32x4);
 
         let px_u8: *const u8 = x.as_ptr().cast();
@@ -2685,33 +2683,24 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
 
         #[inline(always)]
         fn split_and_zip_four_bit(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_16 {
-            let lo_raw = input.to_underlying();
-            let hi_raw = (input >> 4).to_underlying();
-            // SAFETY: arch is Neon which provides vcombine_u8, vzip1_u8, and vzip2_u8.
-            // vzip1_u8 and vzip2_u8 return 8x8 vectors, which are combined into a 16x8 vector.
-            u8s_16::from_underlying(
-                arch,
-                unsafe { vcombine_u8(vzip1_u8(lo_raw, hi_raw), vzip2_u8(lo_raw, hi_raw)) },
-            ) & u8s_16::splat(arch, 0x0f)
+            use diskann_wide::{LoHi, ZipUnzip};
+            let lo = input;
+            let hi = input >> 4;
+            let halves = LoHi::new(lo, hi);
+            let zipped_halves = u8s_16::zip(halves);
+            zipped_halves & u8s_16::splat(arch, 0x0f)
         }
 
         #[inline(always)]
         fn split_and_zip_two_bits(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> (u8s_16, u8s_16) {
+            use diskann_wide::{LoHi, SplitJoin, ZipUnzip};
             let four_bit_split = split_and_zip_four_bit(input, arch);
-            let lo_raw = four_bit_split.to_underlying();
-            let hi_raw = (four_bit_split >> 2).to_underlying();
-            // SAFETY: arch is Neon which provides vzip1q_u8 and vzip2q_u8.
-            // vzip1q_u8 and vzip2q_u8 return 16x8 vectors, both are returned
-            // using a tuple of u8s_16. 
-            let vec_1 = u8s_16::from_underlying(
-                arch,
-                unsafe { vzip1q_u8(lo_raw, hi_raw) },
-            ) & u8s_16::splat(arch, 0x03);
-            let vec_2 = u8s_16::from_underlying(
-                arch,
-                unsafe { vzip2q_u8(lo_raw, hi_raw) },
-            ) & u8s_16::splat(arch, 0x03);
-            (vec_1, vec_2)
+            let lo = four_bit_split;
+            let hi = four_bit_split >> 2;
+            let zipped = u8s_32::zip(LoHi::new(lo, hi));
+            let LoHi { lo, hi } = zipped.split();
+            let mask = u8s_16::splat(arch, 0x03);
+            (lo & mask, hi & mask)
         }
 
         let y_bytes = len / 4; // number of y bytes over the underlying slice
