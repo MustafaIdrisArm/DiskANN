@@ -115,7 +115,9 @@ use diskann_wide::{
 };
 
 #[cfg(target_arch ="aarch64")]
-use diskann_wide::{SIMDDotProduct, SIMDSumTree, SIMDVector};
+use diskann_wide::{
+    SIMDDotProduct, SIMDPartialEq, SIMDSelect, SIMDSumTree, SIMDVector
+};
 
 use super::{Binary, BitSlice, BitTranspose, Dense, Representation, Unsigned};
 use crate::distances::{Hamming, InnerProduct, MV, MathematicalResult, SquaredL2, check_lengths};
@@ -3515,6 +3517,120 @@ impl Target2<diskann_wide::arch::x86_64::V3, MathematicalResult<f32>, &[f32], US
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32], USlice<'_, 1>>
+    for InnerProduct
+{
+    #[inline(always)]
+    fn run(
+        self,
+        arch: diskann_wide::arch::aarch64::Neon,
+        x: &[f32],
+        y: USlice<'_, 1>,
+    ) -> MathematicalResult<f32> {
+        use std::arch::aarch64::vzip1_u8;
+        // returns number of quantized vectors
+        let len = check_lengths!(x, y)?;
+
+        #[allow(non_camel_case_types)]
+        type u8s_8 = diskann_wide::arch::aarch64::u8x8;
+        diskann_wide::alias!(u8s_16 = <diskann_wide::arch::aarch64::Neon>::u8x16);
+        diskann_wide::alias!(u32s_8 = <diskann_wide::arch::aarch64::Neon>::u32x8);
+        diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
+
+        let px_f32: *const f32 = x.as_ptr();
+        let py_u8: *const u8 = y.as_ptr().cast();
+
+        let mut i = 0;
+        let mut s: f32 = 0.0;
+
+        #[inline(always)]
+        fn interleave_four_bits(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_8 {
+            let vec1: u8s_8 = input;
+            let vec2: u8s_8 = input>>4;
+            u8s_8::from_underlying (
+                arch,
+                unsafe {  vzip1_u8(vec1.to_underlying(), vec2.to_underlying()) }
+            )
+        }
+
+        #[inline(always)]
+        fn interleave_two_bits(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_8 {
+            let four_bit_vec = interleave_four_bits(input, arch);
+            let vec1: u8s_8 = four_bit_vec;
+            let vec2: u8s_8 = four_bit_vec>>2;
+            u8s_8::from_underlying (
+                arch,
+                unsafe {  vzip1_u8(vec1.to_underlying(), vec2.to_underlying()) }
+            )
+        }
+
+        #[inline(always)]
+        fn interleave_one_bit(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_8 {
+            let two_bit_vec: u8s_8 = interleave_two_bits(input, arch);
+            let vec1: u8s_8 = two_bit_vec;
+            let vec2: u8s_8 = two_bit_vec>>1;
+            u8s_8::from_underlying (
+                arch,
+                unsafe {  vzip1_u8(vec1.to_underlying(), vec2.to_underlying()) }
+            ) & u8s_8::splat(arch, 0x01)
+        }
+
+        let y_bytes = len / 8; // number of y bytes over the underlying slice
+        if i < y_bytes {
+            let mut s0 = f32s_8::default(arch);
+
+            while i + 1 <= y_bytes {
+                // SAFETY: `i + 1 <= y_bytes` guarantees that 1 byte from `py_u8` are readable at offset `i`.
+                let y_element: u8 = unsafe { py_u8.add(i).read_unaligned() };
+                let y_vec: u8s_8 = interleave_one_bit(u8s_8::splat(arch, y_element), arch);
+                let y_vec_u32s: u32s_8 = y_vec.into();
+                
+                // SAFETY: i + 1 <= y_bytes ==> 32*i+32 <= x_bytes
+                // but .add multiplies by the size of f32 (4 bytes)
+                // therefore, 8*i+8 <= x_elements which guarrantees that we can read
+                // 8 f32 elements from offset 8*i
+                let x_vec = unsafe { f32s_8::load_simd(arch, px_f32.add(8*i)) };
+
+                let zero_u32s = u32s_8::default(arch);
+
+                // sets lanes to 00000000 when LSB is 0
+                // sets lanes to ffffffff when LSB is 1
+                let select_lanes = y_vec_u32s.ne_simd(zero_u32s);
+
+                let result = select_lanes.select(x_vec, f32s_8::default(arch));
+                // add to accumulate first 4 results
+                s0 = s0 + result;
+
+                i+=1;
+            }
+            s = s0.sum_tree() as f32;
+        }
+
+        // converting from y bytes to logical elements.
+        i *= 8;
+
+        // Deal with the remainder the slow way (at most 7 element).
+        debug_assert!(len - i <= 7);
+        if i != len {
+            #[inline(never)]
+            fn fallback(x: &[f32], y: USlice<'_, 1>, from: usize) -> f32 {
+                let mut s: f32 = 0.0;
+                for i in from..x.len() {
+                    // SAFETY: `i` is in `from..x.len()`, which equals `y.len()`.
+                    let (ix, iy) =
+                        unsafe { (*x.get_unchecked(i) as f32, y.get_unchecked(i) as f32) };
+                    s += ix * iy;
+                }
+                s
+            }
+            s += fallback(x, y, i)
+        }
+
+        Ok(MV::new(s))
+    }
+}
+
 impl<const N: usize>
     Target2<diskann_wide::arch::Scalar, MathematicalResult<f32>, &[f32], USlice<'_, N>>
     for InnerProduct
@@ -3573,7 +3689,7 @@ ip_retarget!(diskann_wide::arch::x86_64::V3, 3, 5, 6, 7, 8);
 ip_retarget!(diskann_wide::arch::x86_64::V4, 1, 2, 3, 4, 5, 6, 7, 8);
 
 #[cfg(target_arch = "aarch64")]
-ip_retarget!(diskann_wide::arch::aarch64::Neon, 1, 2, 3, 4, 5, 6, 7, 8);
+ip_retarget!(diskann_wide::arch::aarch64::Neon, 2, 3, 4, 5, 6, 7, 8);
 
 /// Delegate the implementation of `PureDistanceFunction` to `diskann_wide::arch::Target2`
 /// with the current architectures.
