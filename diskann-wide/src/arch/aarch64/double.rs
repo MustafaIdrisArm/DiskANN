@@ -156,6 +156,16 @@ impl From<u8x8> for u32x8 {
     }
 }
 
+impl From<u8x8> for u16x8 {
+    #[inline(always)]
+    fn from(value: u8x8) -> Self {
+        let arch = value.arch();
+
+        // SAFETY: `vmovl_u8` is available on NEON and losslessly widens all eight lanes.
+        Self::from_underlying(arch, unsafe { vmovl_u8(value.to_underlying()) })
+    }
+}
+
 impl From<u16x8> for f32x8 {
     #[inline(always)]
     fn from(value: u16x8) -> Self {
@@ -173,6 +183,14 @@ impl From<u16x8> for f32x8 {
                 ),
             )
         }
+    }
+}
+
+impl From<u8x16> for f32x16 {
+    #[inline(always)]
+    fn from(value: u8x16) -> Self {
+        let LoHi { lo, hi } = value.split();
+        Self::new(u16x8::from(lo).into(), u16x8::from(hi).into())
     }
 }
 
