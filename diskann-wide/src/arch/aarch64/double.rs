@@ -15,7 +15,7 @@ use crate::{
 use super::{
     f16x8, f32x4, i8x16, i16x8, i32x4,
     masks::{mask8x16, mask16x8, mask32x4, mask64x2},
-    u8x16, u32x4, u64x2, u8x8
+    u8x16, u32x4, u64x2, u8x8, u16x8
 };
 
 // Double Masks
@@ -183,6 +183,20 @@ impl From<u8x8> for u32x8 {
                 u32x4::from_underlying(arch, vmovl_u16(vget_low_u16(u16s))),
                 u32x4::from_underlying(arch, vmovl_u16(vget_high_u16(u16s))),
             )
+        }
+    }
+}
+
+impl From<u16x8> for f32x8 {
+    #[inline(always)]
+    fn from(value: u16x8) -> Self {
+        let arch = value.arch();
+
+        unsafe {
+        Self::new(
+            f32x4::from_underlying(arch, vcvtq_f32_u32(vmovl_u16(vget_low_u16(value.to_underlying())))),
+            f32x4::from_underlying(arch, vcvtq_f32_u32(vmovl_u16(vget_high_u16(value.to_underlying())))),
+        )
         }
     }
 }
