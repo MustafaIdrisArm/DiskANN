@@ -3534,6 +3534,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
 
         #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
+        type u16s_8 = diskann_wide::arch::aarch64::u16x8;
         diskann_wide::alias!(u8s_16 = <diskann_wide::arch::aarch64::Neon>::u8x16);
         diskann_wide::alias!(u32s_8 = <diskann_wide::arch::aarch64::Neon>::u32x8);
         diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
@@ -3584,7 +3585,8 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 // SAFETY: `i + 1 <= y_bytes` guarantees that 1 byte from `py_u8` are readable at offset `i`.
                 let y_element: u8 = unsafe { py_u8.add(i).read_unaligned() };
                 let y_vec: u8s_8 = interleave_one_bit(u8s_8::splat(arch, y_element), arch);
-                let y_vec_u32s: u32s_8 = y_vec.into();
+                let y_vec_u16s: u16s_8 = y_vec.into();
+                let y_vec_f32s: f32s_8 = y_vec_u16s.into();
 
                 // SAFETY: i + 1 <= y_bytes ==> 32*i+32 <= x_bytes
                 // but .add multiplies by the size of f32 (4 bytes)
@@ -3592,15 +3594,8 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 // 8 f32 elements from offset 8*i
                 let x_vec = unsafe { f32s_8::load_simd(arch, px_f32.add(8*i)) };
 
-                let zero_u32s = u32s_8::default(arch);
-
-                // sets lanes to 00000000 when LSB is 0
-                // sets lanes to ffffffff when LSB is 1
-                let select_lanes = y_vec_u32s.ne_simd(zero_u32s);
-
-                let result = select_lanes.select(x_vec, f32s_8::default(arch));
                 // add to accumulate first 4 results
-                s0 = s0 + result;
+                s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
 
                 i+=1;
             }
