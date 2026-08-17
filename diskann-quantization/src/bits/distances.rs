@@ -116,7 +116,7 @@ use diskann_wide::{
 
 #[cfg(target_arch ="aarch64")]
 use diskann_wide::{
-    SIMDDotProduct, SIMDPartialEq, SIMDSelect, SIMDSumTree, SIMDVector
+    SIMDDotProduct, SIMDMulAdd, SIMDPartialEq, SIMDSelect, SIMDSumTree, SIMDVector
 };
 
 use super::{Binary, BitSlice, BitTranspose, Dense, Representation, Unsigned};
@@ -3705,10 +3705,8 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 // 8 f32 elements from offset 8*i
                 let x_vec = unsafe { f32s_8::load_simd(arch, px_f32.add(8*i)) };
 
-
-
                 // add to accumulate first 4 results
-                s0 = s0 + x_vec * y_vec_f32s;
+                s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
 
                 i+=1;
             }
@@ -3796,7 +3794,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
 
 
                 // add to accumulate first 4 results
-                s0 = s0 + x_vec * y_vec_f32s;
+                s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
 
                 i+=8;
             }
@@ -3816,7 +3814,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 // 8 f32 elements from offset 8*i
                 let x_vec = unsafe { f32s_16::load_simd_first(arch, px_f32.add(2*i), remaining_y_bytes * 2) };
 
-                s0 = s0 + x_vec * y_vec_f32s;
+                s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
 
                 i+=remaining_y_bytes;
             }
