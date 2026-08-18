@@ -116,7 +116,7 @@ use diskann_wide::{
 
 #[cfg(target_arch ="aarch64")]
 use diskann_wide::{
-    SIMDDotProduct, SIMDMulAdd, SIMDPartialEq, SIMDSelect, SIMDSumTree, SIMDVector
+    SIMDDotProduct, SIMDMulAdd, SIMDSumTree, SIMDVector
 };
 
 use super::{Binary, BitSlice, BitTranspose, Dense, Representation, Unsigned};
@@ -3637,75 +3637,82 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         x: &[f32],
         y: USlice<'_, 2>,
     ) -> MathematicalResult<f32> {
-        use std::arch::aarch64::vzip1q_u16;
+        use std::arch::aarch64::vld4q_f32;
         // returns number of quantized vectors
         let len = check_lengths!(x, y)?;
 
+        #[allow(non_camel_case_types)]
+        type u8s_8 = diskann_wide::arch::aarch64::u8x8;
         #[allow(non_camel_case_types)]
         type u16s_8 = diskann_wide::arch::aarch64::u16x8;
         diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
 
         let px_f32: *const f32 = x.as_ptr();
-        let py_u16: *const u16 = y.as_ptr().cast();
+        let py_u8: *const u8 = y.as_ptr();
 
         let mut i = 0;
         let mut s: f32 = 0.0;
 
-        #[inline(always)]
-        fn interleave_eight_bits(input: u16s_8, arch: diskann_wide::arch::aarch64::Neon) -> u16s_8 {
-            let vec1: u16s_8 = input;
-            let vec2: u16s_8 = input>>8;
-            u16s_8::from_underlying (
-                arch,
-                unsafe {  vzip1q_u16(vec1.to_underlying(), vec2.to_underlying()) }
-            )
-        }
-
-        #[inline(always)]
-        fn interleave_four_bits(input: u16s_8, arch: diskann_wide::arch::aarch64::Neon) -> u16s_8 {
-            let eight_bit_vec = interleave_eight_bits(input, arch);
-            let vec1: u16s_8 = eight_bit_vec;
-            let vec2: u16s_8 = eight_bit_vec>>4;
-            u16s_8::from_underlying (
-                arch,
-                unsafe {  vzip1q_u16(vec1.to_underlying(), vec2.to_underlying()) }
-            )
-        }
-
-        #[inline(always)]
-        fn interleave_two_bits(input: u16s_8, arch: diskann_wide::arch::aarch64::Neon) -> u16s_8 {
-            let four_bit_vec = interleave_four_bits(input, arch);
-            let vec1: u16s_8 = four_bit_vec;
-            let vec2: u16s_8 = four_bit_vec>>2;
-            u16s_8::from_underlying (
-                arch,
-                unsafe {  vzip1q_u16(vec1.to_underlying(), vec2.to_underlying()) }
-            ) & u16s_8::splat(arch, 0x03)
-        }
-
-        let y_blocks = len / 8; // number of y blocks over the underlying slice
-        if i + 1 <= y_blocks {
+        let y_bytes = len / 4; // number of y blocks over the underlying slice
+        if i + 1 <= y_bytes {
             let mut s0 = f32s_8::default(arch);
+            let mut s1 = f32s_8::default(arch);
+            let mut s2 = f32s_8::default(arch);
+            let mut s3 = f32s_8::default(arch);
 
-            while i + 1 <= y_blocks {
-                // SAFETY: `i + 1 <= y_blocks` guarantees that 2 bytes from `py_u16` are readable at offset `i` elements.
-                let y_element: u16 = unsafe { py_u16.add(i).read_unaligned() };
-                let y_vec: u16s_8 = interleave_two_bits(u16s_8::splat(arch, y_element), arch);
-                let y_vec_f32s: f32s_8 = y_vec.into();
+            let mask = u8s_8::splat(arch, 0x03);
 
-                // SAFETY: i + 1 <= y_blocks ==> 16*i+16 <= x_bytes
-                // but .add multiplies by the size of f32 (4 bytes)
-                // compared to u16 which is 2 bytes.
-                // therefore, 8*i+8 <= x_elements which guarrantees that we can read
-                // 8 f32 elements from offset 8*i
-                let x_vec = unsafe { f32s_8::load_simd(arch, px_f32.add(8*i)) };
+            while i + 8 <= y_bytes {
+                let y_vec = unsafe { u8s_8::load_simd(arch, py_u8.add(i)) };
 
-                // add to accumulate first 4 results
-                s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
+                let y_vec0_u16s: u16s_8 = (y_vec & mask).into();
+                let y_vec1_u16s: u16s_8 = ((y_vec >> 2) & mask).into();
+                let y_vec2_u16s: u16s_8 = ((y_vec >> 4) & mask).into();
+                let y_vec3_u16s: u16s_8 = ((y_vec >> 6) & mask).into();
 
-                i+=1;
+                let y_vec0: f32s_8 = y_vec0_u16s.into();
+                let y_vec1: f32s_8 = y_vec1_u16s.into();
+                let y_vec2: f32s_8 = y_vec2_u16s.into();
+                let y_vec3: f32s_8 = y_vec3_u16s.into();
+
+                // Each vld4q_f32 consumes 16 consecutive floats and produces:
+                //
+                //   loaded.0[0] = [x0,  x4,  x8,  x12]
+                //   loaded.0[1] = [x1,  x5,  x9,  x13]
+                //   loaded.0[2] = [x2,  x6,  x10, x14]
+                //   loaded.0[3] = [x3,  x7,  x11, x15]
+                //
+                // Two loads provide eight lanes for each of the four streams.
+                let x_base = unsafe { px_f32.add(4 * i) };
+                let (x_lo, x_hi) = unsafe {
+                    (vld4q_f32(x_base), vld4q_f32(x_base.add(16)))
+                };
+
+                let x_vec0 = f32s_8::from_underlying(
+                    arch,
+                    (x_lo.0, x_hi.0),
+                );
+                let x_vec1 = f32s_8::from_underlying(
+                    arch,
+                    (x_lo.1, x_hi.1),
+                );
+                let x_vec2 = f32s_8::from_underlying(
+                    arch,
+                    (x_lo.2, x_hi.2),
+                );
+                let x_vec3 = f32s_8::from_underlying(
+                    arch,
+                    (x_lo.3, x_hi.3),
+                );
+
+                s0 = x_vec0.mul_add_simd(y_vec0, s0);
+                s1 = x_vec1.mul_add_simd(y_vec1, s1);
+                s2 = x_vec2.mul_add_simd(y_vec2, s2);
+                s3 = x_vec3.mul_add_simd(y_vec3, s3);
+
+                i += 8;
             }
-            s = s0.sum_tree() as f32;
+            s = ((s0+s1)+(s2+s3)).sum_tree() as f32;
         }
 
         // converting from y blocks to logical elements.
