@@ -197,6 +197,14 @@ impl From<u8x8> for u16x8 {
     }
 }
 
+impl From<u8x8> for f32x8 {
+    #[inline(always)]
+    fn from(value: u8x8) -> Self {
+        let u16s = u16x8::from(value);
+        Self::from(u16s)
+    }
+}
+
 impl From<u16x8> for f32x8 {
     #[inline(always)]
     fn from(value: u16x8) -> Self {

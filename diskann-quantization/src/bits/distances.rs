@@ -3643,8 +3643,6 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
 
         #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
-        #[allow(non_camel_case_types)]
-        type u16s_8 = diskann_wide::arch::aarch64::u16x8;
         diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
 
         let px_f32: *const f32 = x.as_ptr();
@@ -3674,32 +3672,28 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                     arch,
                     (x_lo.0, x_hi.0),
                 );
-                let y_vec0_u16s: u16s_8 = (y_vec & mask).into();
-                let y_vec0: f32s_8 = y_vec0_u16s.into();
+                let y_vec0: f32s_8 = (y_vec & mask).into();
                 s0 = x_vec0.mul_add_simd(y_vec0, s0);
 
                 let x_vec1 = f32s_8::from_underlying(
                     arch,
                     (x_lo.1, x_hi.1),
                 );
-                let y_vec1_u16s: u16s_8 = ((y_vec >> 2) & mask).into();
-                let y_vec1: f32s_8 = y_vec1_u16s.into();
+                let y_vec1: f32s_8 = ((y_vec >> 2) & mask).into();
                 s1 = x_vec1.mul_add_simd(y_vec1, s1);
 
                 let x_vec2 = f32s_8::from_underlying(
                     arch,
                     (x_lo.2, x_hi.2),
                 );
-                let y_vec2_u16s: u16s_8 = ((y_vec >> 4) & mask).into();
-                let y_vec2: f32s_8 = y_vec2_u16s.into();
+                let y_vec2: f32s_8 = ((y_vec >> 4) & mask).into();
                 s2 = x_vec2.mul_add_simd(y_vec2, s2);
 
                 let x_vec3 = f32s_8::from_underlying(
                     arch,
                     (x_lo.3, x_hi.3),
                 );
-                let y_vec3_u16s: u16s_8 = ((y_vec >> 6) & mask).into();
-                let y_vec3: f32s_8 = y_vec3_u16s.into();
+                let y_vec3: f32s_8 = ((y_vec >> 6) & mask).into();
                 s3 = x_vec3.mul_add_simd(y_vec3, s3);
 
                 i += 8;
