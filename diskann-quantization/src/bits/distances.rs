@@ -3665,24 +3665,6 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
             while i + 8 <= y_bytes {
                 let y_vec = unsafe { u8s_8::load_simd(arch, py_u8.add(i)) };
 
-                let y_vec0_u16s: u16s_8 = (y_vec & mask).into();
-                let y_vec1_u16s: u16s_8 = ((y_vec >> 2) & mask).into();
-                let y_vec2_u16s: u16s_8 = ((y_vec >> 4) & mask).into();
-                let y_vec3_u16s: u16s_8 = ((y_vec >> 6) & mask).into();
-
-                let y_vec0: f32s_8 = y_vec0_u16s.into();
-                let y_vec1: f32s_8 = y_vec1_u16s.into();
-                let y_vec2: f32s_8 = y_vec2_u16s.into();
-                let y_vec3: f32s_8 = y_vec3_u16s.into();
-
-                // Each vld4q_f32 consumes 16 consecutive floats and produces:
-                //
-                //   loaded.0[0] = [x0,  x4,  x8,  x12]
-                //   loaded.0[1] = [x1,  x5,  x9,  x13]
-                //   loaded.0[2] = [x2,  x6,  x10, x14]
-                //   loaded.0[3] = [x3,  x7,  x11, x15]
-                //
-                // Two loads provide eight lanes for each of the four streams.
                 let x_base = unsafe { px_f32.add(4 * i) };
                 let (x_lo, x_hi) = unsafe {
                     (vld4q_f32(x_base), vld4q_f32(x_base.add(16)))
@@ -3692,22 +3674,32 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                     arch,
                     (x_lo.0, x_hi.0),
                 );
+                let y_vec0_u16s: u16s_8 = (y_vec & mask).into();
+                let y_vec0: f32s_8 = y_vec0_u16s.into();
+                s0 = x_vec0.mul_add_simd(y_vec0, s0);
+
                 let x_vec1 = f32s_8::from_underlying(
                     arch,
                     (x_lo.1, x_hi.1),
                 );
+                let y_vec1_u16s: u16s_8 = ((y_vec >> 2) & mask).into();
+                let y_vec1: f32s_8 = y_vec1_u16s.into();
+                s1 = x_vec1.mul_add_simd(y_vec1, s1);
+
                 let x_vec2 = f32s_8::from_underlying(
                     arch,
                     (x_lo.2, x_hi.2),
                 );
+                let y_vec2_u16s: u16s_8 = ((y_vec >> 4) & mask).into();
+                let y_vec2: f32s_8 = y_vec2_u16s.into();
+                s2 = x_vec2.mul_add_simd(y_vec2, s2);
+
                 let x_vec3 = f32s_8::from_underlying(
                     arch,
                     (x_lo.3, x_hi.3),
                 );
-
-                s0 = x_vec0.mul_add_simd(y_vec0, s0);
-                s1 = x_vec1.mul_add_simd(y_vec1, s1);
-                s2 = x_vec2.mul_add_simd(y_vec2, s2);
+                let y_vec3_u16s: u16s_8 = ((y_vec >> 6) & mask).into();
+                let y_vec3: f32s_8 = y_vec3_u16s.into();
                 s3 = x_vec3.mul_add_simd(y_vec3, s3);
 
                 i += 8;
@@ -3716,10 +3708,10 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         }
 
         // converting from y blocks to logical elements.
-        i *= 8;
+        i *= 4;
 
-        // Deal with the remainder the slow way (at most 7 element).
-        debug_assert!(len - i <= 7);
+        // Deal with the remainder the slow way (at most 31 elements).
+        debug_assert!(len - i <= 31);
         if i != len {
             #[inline(never)]
             fn fallback(x: &[f32], y: USlice<'_, 2>, from: usize) -> f32 {
