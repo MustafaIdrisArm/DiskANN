@@ -116,7 +116,7 @@ use diskann_wide::{
 
 #[cfg(target_arch ="aarch64")]
 use diskann_wide::{
-    SIMDDotProduct, SIMDMulAdd, SIMDSumTree, SIMDVector
+    SIMDDotProduct, SIMDMulAdd, SIMDPartialEq, SIMDSelect, SIMDSumTree, SIMDVector
 };
 
 use super::{Binary, BitSlice, BitTranspose, Dense, Representation, Unsigned};
@@ -3534,6 +3534,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
 
         #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
+        diskann_wide::alias!(u32s_8 = <diskann_wide::arch::aarch64::Neon>::u32x8);
         diskann_wide::alias!(f32s_4 = <diskann_wide::arch::aarch64::Neon>::f32x4);
         diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
 
@@ -3579,6 +3580,8 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
             }
 
             let mask = u8s_8::splat(arch, 0x01);
+            let zero_u32s = u32s_8::default(arch);
+            let zero_f32s = f32s_8::default(arch);
 
             while i + 4 <= y_bytes {
                 // SAFETY: The loop condition guarantees that four bytes are readable.
@@ -3591,10 +3594,10 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                     vzip1_u8(y_vec.to_underlying(), (y_vec >> 4).to_underlying())
                 });
 
-                let y_vec1: f32s_8 = (y_vec_zipped & mask).into();
-                let y_vec2: f32s_8 = ((y_vec_zipped >> 1) & mask).into();
-                let y_vec3: f32s_8 = ((y_vec_zipped >> 2) & mask).into();
-                let y_vec4: f32s_8 = ((y_vec_zipped >> 3) & mask).into();
+                let y_vec1: u32s_8 = (y_vec_zipped & mask).into();
+                let y_vec2: u32s_8 = ((y_vec_zipped >> 1) & mask).into();
+                let y_vec3: u32s_8 = ((y_vec_zipped >> 2) & mask).into();
+                let y_vec4: u32s_8 = ((y_vec_zipped >> 3) & mask).into();
 
                 // Four packed bytes represent 32 logical elements, so the loop condition
                 // guarantees that 32 `f32` values are readable from this position.
@@ -3602,10 +3605,10 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 let (x_vec1, x_vec2, x_vec3, x_vec4) =
                     load_deinterleaved_32_f32(x_base, arch);
 
-                s0 = x_vec1.mul_add_simd(y_vec1, s0);
-                s1 = x_vec2.mul_add_simd(y_vec2, s1);
-                s2 = x_vec3.mul_add_simd(y_vec3, s2);
-                s3 = x_vec4.mul_add_simd(y_vec4, s3);
+                s0 = s0 + y_vec1.ne_simd(zero_u32s).select(x_vec1, zero_f32s);
+                s1 = s1 + y_vec2.ne_simd(zero_u32s).select(x_vec2, zero_f32s);
+                s2 = s2 + y_vec3.ne_simd(zero_u32s).select(x_vec3, zero_f32s);
+                s3 = s3 + y_vec4.ne_simd(zero_u32s).select(x_vec4, zero_f32s);
 
                 i += 4;
             }
