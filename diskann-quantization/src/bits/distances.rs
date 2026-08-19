@@ -3528,16 +3528,14 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         x: &[f32],
         y: USlice<'_, 1>,
     ) -> MathematicalResult<f32> {
-        use std::arch::aarch64::vzip1_u8;
+        use std::arch::aarch64::{vcreate_u8, vld4q_f32, vzip1_u8};
         // returns number of quantized vectors
         let len = check_lengths!(x, y)?;
 
         #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
-        diskann_wide::alias!(u8s_16 = <diskann_wide::arch::aarch64::Neon>::u8x16);
         diskann_wide::alias!(f32s_4 = <diskann_wide::arch::aarch64::Neon>::f32x4);
         diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
-        diskann_wide::alias!(f32s_16 = <diskann_wide::arch::aarch64::Neon>::f32x16);
 
         let px_f32: *const f32 = x.as_ptr();
         let py_u8: *const u8 = y.as_ptr().cast();
@@ -3547,68 +3545,78 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
 
         let y_bytes = len / 8; // number of y bytes over the underlying slice
         if i < y_bytes {
-            let mut s0 = f32s_16::default(arch);
-            let mut s1 = f32s_16::default(arch);
-            let mut s2 = f32s_16::default(arch);
-            let mut s3 = f32s_16::default(arch);
-            
-            #[inline(always)]
-            fn four_way_interleaved_load_64_bytes(ptr: *const f32, arch: diskann_wide::arch::aarch64::Neon) -> (f32s_16,f32s_16,f32s_16,f32s_16) {
-                use std::arch::aarch64::vld4q_f32;
-                let vec1 = unsafe {vld4q_f32(ptr)};
-                let vec2 = unsafe {vld4q_f32(ptr.add(16))};
-                let vec3 = unsafe {vld4q_f32(ptr.add(32))};
-                let vec4 = unsafe {vld4q_f32(ptr.add(48))};
-                let first_set = f32s_16::new(f32s_8::new(f32s_4::from_underlying(arch, vec1.0), f32s_4::from_underlying(arch, vec2.0)), f32s_8::new(f32s_4::from_underlying(arch, vec3.0), f32s_4::from_underlying(arch, vec4.0)));
-                let second_set = f32s_16::new(f32s_8::new(f32s_4::from_underlying(arch, vec1.1), f32s_4::from_underlying(arch, vec2.1)), f32s_8::new(f32s_4::from_underlying(arch, vec3.1), f32s_4::from_underlying(arch, vec4.1)));
-                let third_set = f32s_16::new(f32s_8::new(f32s_4::from_underlying(arch, vec1.2), f32s_4::from_underlying(arch, vec2.2)), f32s_8::new(f32s_4::from_underlying(arch, vec3.2), f32s_4::from_underlying(arch, vec4.2)));
-                let fourth_set = f32s_16::new(f32s_8::new(f32s_4::from_underlying(arch, vec1.3), f32s_4::from_underlying(arch, vec2.3)), f32s_8::new(f32s_4::from_underlying(arch, vec3.3), f32s_4::from_underlying(arch, vec4.3)));
-                (first_set, second_set, third_set, fourth_set)
-            }
+            let mut s0 = f32s_8::default(arch);
+            let mut s1 = f32s_8::default(arch);
+            let mut s2 = f32s_8::default(arch);
+            let mut s3 = f32s_8::default(arch);
 
             #[inline(always)]
-            fn split_and_zip_four_bit(input: u8s_8) -> u8s_16 {
-                use diskann_wide::{LoHi, ZipUnzip};
-                let vec1: u8s_8 = input;
-                let vec2: u8s_8 = input>>4;
-                u8s_16::zip(LoHi::new(vec1, vec2))
+            fn load_deinterleaved_32_f32(
+                ptr: *const f32,
+                arch: diskann_wide::arch::aarch64::Neon,
+            ) -> (f32s_8, f32s_8, f32s_8, f32s_8) {
+                // SAFETY: The caller guarantees that `ptr` is valid for 32 consecutive
+                // `f32` values. Each structured load reads 16 values.
+                let (lo, hi) = unsafe { (vld4q_f32(ptr), vld4q_f32(ptr.add(16))) };
+                (
+                    f32s_8::new(
+                        f32s_4::from_underlying(arch, lo.0),
+                        f32s_4::from_underlying(arch, hi.0),
+                    ),
+                    f32s_8::new(
+                        f32s_4::from_underlying(arch, lo.1),
+                        f32s_4::from_underlying(arch, hi.1),
+                    ),
+                    f32s_8::new(
+                        f32s_4::from_underlying(arch, lo.2),
+                        f32s_4::from_underlying(arch, hi.2),
+                    ),
+                    f32s_8::new(
+                        f32s_4::from_underlying(arch, lo.3),
+                        f32s_4::from_underlying(arch, hi.3),
+                    ),
+                )
             }
 
-            let mask = u8s_16::splat(arch, 0x01);
-    
-            while i + 8 <= y_bytes {
-                // SAFETY: `i + 1 <= y_bytes` guarantees that 1 byte from `py_u8` are readable at offset `i`.
-                let y_vec: u8s_8 = unsafe { u8s_8::load_simd(arch, py_u8.add(i)) };
-                let y_vec_zipped: u8s_16 = split_and_zip_four_bit(y_vec);
+            let mask = u8s_8::splat(arch, 0x01);
 
-                let y_vec1: f32s_16 = (y_vec_zipped & mask).into();
-                let y_vec2: f32s_16 = ((y_vec_zipped>>1) & mask).into();
-                let y_vec3: f32s_16 = ((y_vec_zipped>>2) & mask).into();
-                let y_vec4: f32s_16 = ((y_vec_zipped>>3) & mask).into();
+            while i + 4 <= y_bytes {
+                // SAFETY: The loop condition guarantees that four bytes are readable.
+                let y_word = unsafe { py_u8.add(i).cast::<u32>().read_unaligned() };
+                // SAFETY: `vcreate_u8` only moves the provided bits into a NEON register;
+                // `arch` proves that NEON instructions are available.
+                let y_vec = u8s_8::from_underlying(arch, unsafe { vcreate_u8(y_word.into()) });
+                // SAFETY: `arch` proves that the NEON `vzip1_u8` instruction is available.
+                let y_vec_zipped = u8s_8::from_underlying(arch, unsafe {
+                    vzip1_u8(y_vec.to_underlying(), (y_vec >> 4).to_underlying())
+                });
 
-                // SAFETY: i + 1 <= y_bytes ==> 32*i+32 <= x_bytes
-                // but .add multiplies by the size of f32 (4 bytes)
-                // therefore, 8*i+8 <= x_elements which guarrantees that we can read
-                // 8 f32 elements from offset 8*i
+                let y_vec1: f32s_8 = (y_vec_zipped & mask).into();
+                let y_vec2: f32s_8 = ((y_vec_zipped >> 1) & mask).into();
+                let y_vec3: f32s_8 = ((y_vec_zipped >> 2) & mask).into();
+                let y_vec4: f32s_8 = ((y_vec_zipped >> 3) & mask).into();
+
+                // Four packed bytes represent 32 logical elements, so the loop condition
+                // guarantees that 32 `f32` values are readable from this position.
                 let x_base = unsafe { px_f32.add(8 * i) };
-                let (x_vec1, x_vec2, x_vec3, x_vec4) = four_way_interleaved_load_64_bytes(x_base, arch);
+                let (x_vec1, x_vec2, x_vec3, x_vec4) =
+                    load_deinterleaved_32_f32(x_base, arch);
 
-                // add to accumulate first 4 results
                 s0 = x_vec1.mul_add_simd(y_vec1, s0);
                 s1 = x_vec2.mul_add_simd(y_vec2, s1);
                 s2 = x_vec3.mul_add_simd(y_vec3, s2);
                 s3 = x_vec4.mul_add_simd(y_vec4, s3);
 
-                i+=8;
+                i += 4;
             }
-            s = ((s0+s1)+(s2+s3)).sum_tree() as f32;
+            s = ((s0 + s1) + (s2 + s3)).sum_tree() as f32;
         }
 
         // converting from y bytes to logical elements.
         i *= 8;
 
-        // Deal with the remainder the slow way (at most 7 element).
-        debug_assert!(len - i <= 63);
+        // Deal with the remainder the slow way (at most 31 elements).
+        debug_assert!(len - i <= 31);
         if i != len {
             #[inline(never)]
             fn fallback(x: &[f32], y: USlice<'_, 1>, from: usize) -> f32 {
