@@ -114,11 +114,8 @@ use diskann_wide::{
     SIMDCast, SIMDDotProduct, SIMDMulAdd, SIMDReinterpret, SIMDSumTree, SIMDVector,
 };
 
-#[cfg(target_arch ="aarch64")]
-use diskann_wide::{
-    SIMDDotProduct, SIMDSumTree, SIMDVector
-};
-
+#[cfg(target_arch = "aarch64")]
+use diskann_wide::{SIMDDotProduct, SIMDSumTree, SIMDVector};
 
 use super::{Binary, BitSlice, BitTranspose, Dense, Representation, Unsigned};
 use crate::distances::{Hamming, InnerProduct, MV, MathematicalResult, SquaredL2, check_lengths};
@@ -1572,8 +1569,13 @@ impl Target2<diskann_wide::arch::x86_64::V3, MathematicalResult<u32>, USlice<'_,
 }
 
 #[cfg(target_arch = "aarch64")]
-impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<'_, 4>, USlice<'_, 4>>
-    for InnerProduct
+impl
+    Target2<
+        diskann_wide::arch::aarch64::Neon,
+        MathematicalResult<u32>,
+        USlice<'_, 4>,
+        USlice<'_, 4>,
+    > for InnerProduct
 {
     #[inline(always)]
     fn run(
@@ -1594,7 +1596,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
         let mut s: u32 = 0;
 
         // number of bytes over the underlying slice
-        let bytes = len/2;
+        let bytes = len / 2;
         if i < bytes {
             let mut s0 = u32s::default(arch);
             let mut s1 = u32s::default(arch);
@@ -1618,10 +1620,10 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
                 let second_y: u8s = (y_vec >> 4) & mask;
                 s1 = s1.dot_simd(second_x, second_y);
                 // repeat for next block
-                i+=16;
+                i += 16;
             }
 
-            let remaining_bytes = len/2 - i;
+            let remaining_bytes = len / 2 - i;
 
             if remaining_bytes > 0 {
                 let remaining_vec1 = remaining_bytes.min(16);
@@ -1641,9 +1643,9 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
                 let second_x: u8s = (x_vec >> 4) & mask;
                 let second_y: u8s = (y_vec >> 4) & mask;
                 s1 = s1.dot_simd(second_x, second_y);
-                i+= remaining_bytes;
+                i += remaining_bytes;
             }
-            s = (s0 + s1).sum_tree() as u32;
+            s = (s0 + s1).sum_tree();
         }
         // Convert bytes to nibble indexes.
         i *= 2;
@@ -1653,7 +1655,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
 
         if i != len {
             // SAFETY: `i` is guaranteed to be less than `x.len()`.
-           let ix = unsafe { x.get_unchecked(i) } as i32;
+            let ix = unsafe { x.get_unchecked(i) } as i32;
             // SAFETY: `i` is guaranteed to be less than `y.len()`.
             let iy = unsafe { y.get_unchecked(i) } as i32;
             s += (ix * iy) as u32;
@@ -1662,7 +1664,6 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<u32>, USlice<
         Ok(MV::new(s))
     }
 }
-
 
 /// Compute the inner product between bitvectors `x` and `y`.
 ///

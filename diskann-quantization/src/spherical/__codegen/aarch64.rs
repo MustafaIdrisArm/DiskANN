@@ -9,7 +9,7 @@ use diskann_wide::arch::aarch64::Neon;
 use crate::{
     alloc::{AllocatorError, GlobalAllocator},
     spherical::{
-        iface::{AsData, AsFull, AsQuery, DistanceComputer, Reify},
+        iface::{AsData, AsQuery, DistanceComputer, Reify},
         vectors,
     },
 };
