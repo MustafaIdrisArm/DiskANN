@@ -3,7 +3,7 @@
  * Licensed under the MIT license.
  */
 
-//! Intantiations for codegen inspection.
+//! Instantiations for codegen inspection.
 //!
 //! These methods are **not** part of the public API.
 
