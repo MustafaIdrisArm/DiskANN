@@ -3042,7 +3042,7 @@ mod tests {
             // Need a higher miri-amount due to the larget block size
             (Key::new(4, X86_64_V3), Bounds::new(256, 150)),
             (Key::new(4, X86_64_V4), Bounds::new(512, 300)),
-            (Key::new(4, Neon), Bounds::new(64, 64)),
+            (Key::new(4, Neon), Bounds::new(256, 96)),
             (Key::new(5, Scalar), Bounds::new(64, 64)),
             (Key::new(5, X86_64_V3), Bounds::new(256, 96)),
             (Key::new(5, X86_64_V4), Bounds::new(256, 96)),
