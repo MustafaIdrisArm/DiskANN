@@ -7,7 +7,7 @@ use crate::{
     Emulated,
     constant::Const,
     helpers,
-    traits::{SIMDMask, SIMDMulAdd, SIMDPartialEq, SIMDPartialOrd, SIMDVector},
+    traits::{SIMDMask, SIMDMulAdd, SIMDAbsDiff, SIMDPartialEq, SIMDPartialOrd, SIMDVector},
 };
 
 // AArch64 masks
@@ -15,7 +15,7 @@ use super::{
     Neon, internal,
     macros::{self, AArchLoadStore, AArchSplat},
     masks::mask8x16,
-    u8x8,
+    u8x8
 };
 
 // AArch64 intrinsics
@@ -34,6 +34,7 @@ helpers::unsafe_map_binary_op!(u8x16, std::ops::Add, add, vaddq_u8, "neon");
 helpers::unsafe_map_binary_op!(u8x16, std::ops::Sub, sub, vsubq_u8, "neon");
 helpers::unsafe_map_binary_op!(u8x16, std::ops::Mul, mul, vmulq_u8, "neon");
 macros::aarch64_define_fma!(u8x16, vmlaq_u8);
+macros::aarch64_define_absdiff!(u8x16, vabdq_u8);
 
 macros::aarch64_define_cmp!(
     u8x16,
@@ -97,6 +98,7 @@ mod tests {
     test_utils::ops::test_sub!(u8x16, 0xfc627f10b5f8db8a, test_neon());
     test_utils::ops::test_mul!(u8x16, 0x0f4caa80eceaa523, test_neon());
     test_utils::ops::test_fma!(u8x16, 0xb8f702ba85375041, test_neon());
+    test_utils::ops::test_abs_diff!(u8x16, 0xb8f702ba85375042, test_neon());
     test_utils::ops::test_splitjoin!(u8x16 => u8x8, 0xa4d00a4d04293967, test_neon());
 
     test_utils::ops::test_cmp!(u8x16, 0x941757bd5cc641a1, test_neon());

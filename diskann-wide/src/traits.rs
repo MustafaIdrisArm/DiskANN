@@ -524,6 +524,11 @@ pub trait SIMDAbs {
     fn abs_simd(self) -> Self;
 }
 
+/// Take the absolute difference between each lane
+pub trait SIMDAbsDiff {
+    fn abs_diff_simd(self, rhs: Self) -> Self;
+}
+
 /// A SIMD equivalent of `std::cmp::PartialEq`.
 ///
 /// Instead of a boolean, return `Self::Mask` containing the result of the element-wise

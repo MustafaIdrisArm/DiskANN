@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    LoHi, SIMDAbs, SIMDDotProduct, SIMDMask, SIMDMinMax, SIMDMulAdd, SIMDPartialEq, SIMDPartialOrd,
+    LoHi, SIMDAbs, SIMDAbsDiff, SIMDDotProduct, SIMDMask, SIMDMinMax, SIMDMulAdd, SIMDPartialEq, SIMDPartialOrd,
     SIMDSelect, SIMDSumTree, SIMDVector, SplitJoin,
 };
 
@@ -282,6 +282,13 @@ impl<T: SIMDAbs> SIMDAbs for Doubled<T> {
     #[inline(always)]
     fn abs_simd(self) -> Self {
         Self(self.0.abs_simd(), self.1.abs_simd())
+    }
+}
+
+impl<T: SIMDAbsDiff> SIMDAbsDiff for Doubled<T> {
+    #[inline(always)]
+    fn abs_diff_simd(self, rhs: Self) -> Self {
+        Self(self.0.abs_diff_simd(rhs.0), self.1.abs_diff_simd(rhs.1))
     }
 }
 
