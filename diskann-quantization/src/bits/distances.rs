@@ -4828,6 +4828,17 @@ mod tests {
                             &mut rng,
                         );
                     }
+                    #[cfg(target_arch = "aarch64")]
+                    if let Some(arch) = diskann_wide::arch::aarch64::Neon::new_checked() {
+                        fuzz_heterogeneous_ip::<$M>(
+                            MAX_DIM,
+                            TRIALS_PER_DIM,
+                            $max_val,
+                            &|x, y| arch.run2(InnerProduct, x, y),
+                            "neon",
+                            &mut rng,
+                        );
+                    }
                 }
 
                 #[test]
