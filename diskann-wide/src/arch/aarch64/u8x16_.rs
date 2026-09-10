@@ -7,7 +7,7 @@ use crate::{
     Emulated,
     constant::Const,
     helpers,
-    traits::{SIMDMask, SIMDMulAdd, SIMDAbsDiff, SIMDPartialEq, SIMDPartialOrd, SIMDVector},
+    traits::{SIMDMask, SIMDMulAdd, SIMDAbsDiff, SIMDPartialEq, SIMDPartialOrd, SIMDVector, InterleavedLoadStore},
 };
 
 // AArch64 masks
@@ -36,38 +36,38 @@ helpers::unsafe_map_binary_op!(u8x16, std::ops::Mul, mul, vmulq_u8, "neon");
 macros::aarch64_define_fma!(u8x16, vmlaq_u8);
 macros::aarch64_define_absdiff!(u8x16, vabdq_u8);
 
-macros::aarch64_interleaved_loadstore(
+macros::aarch64_interleaved_loadstore!(
     u8x16,
     2,
     vld2q_u8,
     vst2q_u8,
-    |arch, raw| [
+    |arch, raw: uint8x16x2_t| [
         Self::from_underlying(arch, raw.0),
         Self::from_underlying(arch, raw.1),
     ],
-    |vectors| uint8x16x2_t(
+    |vectors: [u8x16; 2]| uint8x16x2_t(
         vectors[0].to_underlying(),
         vectors[1].to_underlying(),
-    ),
+    )
 );
 
-macros::aarch64_interleaved_loadstore(
+macros::aarch64_interleaved_loadstore!(
     u8x16,
     4,
     vld4q_u8,
     vst4q_u8,
-    |arch, raw| [
+    |arch, raw: uint8x16x4_t| [
         Self::from_underlying(arch, raw.0),
         Self::from_underlying(arch, raw.1),
         Self::from_underlying(arch, raw.2),
         Self::from_underlying(arch, raw.3),
     ],
-    |vectors| uint8x16x4_t(
+    |vectors: [u8x16; 4]| uint8x16x4_t(
         vectors[0].to_underlying(),
         vectors[1].to_underlying(),
         vectors[2].to_underlying(),
-        vectors[3].to_underlying()
-    ),
+        vectors[3].to_underlying(),
+    )
 );
 
 macros::aarch64_define_cmp!(
