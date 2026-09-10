@@ -12,7 +12,7 @@ use super::{
     constant::Const,
     reference::{ReferenceAbs, ReferenceAbsDiff, ReferenceCast, ReferenceScalarOps, ReferenceShifts, TreeReduce},
     traits::{
-        ArrayType, SIMDAbs, SIMDAbsDiff, SIMDCast, SIMDDotProduct, SIMDMask, SIMDMinMax, SIMDMulAdd,
+        ArrayType, InterleavedLoadStore, SIMDAbs, SIMDAbsDiff, SIMDCast, SIMDDotProduct, SIMDMask, SIMDMinMax, SIMDMulAdd,
         SIMDPartialEq, SIMDPartialOrd, SIMDReinterpret, SIMDSelect, SIMDSumTree, SIMDVector,
     },
 };
@@ -778,6 +778,44 @@ impl_zipunzip!(u8, 32 => 16);
 impl_zipunzip!(u32, 8 => 4);
 impl_zipunzip!(f16, 16 => 8);
 
+/////////////////////////////////////
+// Interleaved Loading and Storing //
+/////////////////////////////////////
+
+macro_rules! impl_interleaved_load_store {
+    ($type:ty, $N:literal, $Stride:literal) => {
+        impl<A> InterleavedLoadStore<$Stride> for Emulated<$type, $N, A> 
+        where A: arch::Sealed {
+            #[inline(always)]
+            unsafe fn load_deinterleaved(arch: Self::Arch, ptr: *const <Self as SIMDVector>::Scalar) -> [Self; $Stride] {
+                // Implementation for loading two-way interleaved data
+                core::array::from_fn(|stream| {
+                    Self::from_arch_fn(arch, |lane| {
+                        // SAFETY: Caller guarantees N * LANES readable elements.
+                        unsafe { ptr.add(lane * $Stride + stream).read_unaligned() }
+                    })
+                })
+            }
+           unsafe fn store_interleaved(
+            vectors: [Self; $Stride],
+            ptr: *mut <Self as SIMDVector>::Scalar,
+            ) {
+                for (stream, vector) in vectors.into_iter().enumerate() {
+                    for (lane, value) in vector.0.into_iter().enumerate() {
+                        // SAFETY: Caller guarantees space for $Stride * LANES elements.
+                        unsafe {
+                            ptr.add(lane * $Stride + stream).write_unaligned(value);
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+
+impl_interleaved_load_store!(u8, 16, 2);
+impl_interleaved_load_store!(u8, 16, 4);
+
 ///////////
 // Tests //
 ///////////
@@ -856,6 +894,15 @@ mod test_emulated {
         test_utils::test_store_simd::<i32, 2, Emulated<i32, 2>>(Scalar);
         test_utils::test_store_simd::<i32, 4, Emulated<i32, 4>>(Scalar);
         test_utils::test_store_simd::<i32, 8, Emulated<i32, 8>>(Scalar);
+    }
+    
+    #[test]
+    fn test_interleaved_load_store() {
+        test_utils::test_deinterleaved_load::<u8, 16, 2, Emulated<u8, 16>>(Scalar);
+        test_utils::test_interleaved_store::<u8, 16, 2, Emulated<u8, 16>>(Scalar);
+
+        test_utils::test_deinterleaved_load::<u8, 16, 4, Emulated<u8, 16>>(Scalar);
+        test_utils::test_interleaved_store::<u8, 16, 4, Emulated<u8, 16>>(Scalar);
     }
 
     // Only test a subset of constructors as all `Emulated` have the same implementation.

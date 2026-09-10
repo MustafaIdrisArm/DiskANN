@@ -131,6 +131,26 @@ macro_rules! aarch64_define_register {
     };
 }
 
+macro_rules! aarch64_interleaved_loadstore {
+    ($type:ty, $stride:literal, $deinter_load:expr, $inter_store:expr, $unpack:expr, $pack:expr) => {
+        impl InterleavedLoadStore<$stride> for $type {
+            #[inline(always)]
+            unsafe fn load_deinterleaved(arch: Self::Arch, ptr: *const <Self as SIMDVector>::Scalar) -> [Self; $Stride] {
+                // Implementation for loading two-way interleaved data
+                let raw = unsafe { $deinter_ld(ptr).iter().map(|vector| Self::from_underlying()) }
+                ($unpack)(arch, raw)
+            }
+           unsafe fn store_interleaved(
+            vectors: [Self; $stride],
+            ptr: *mut <Self as SIMDVector>::Scalar,
+            ) {
+                let raw = ($pack)(vectors);
+                unsafe { $store_intrinsic(ptr, raw) };
+            }
+        }
+    };
+}
+
 pub(super) trait AArchSplat: SIMDVector {
     fn aarch_splat(arch: <Self as SIMDVector>::Arch, value: <Self as SIMDVector>::Scalar) -> Self;
 

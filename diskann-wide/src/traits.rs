@@ -68,6 +68,31 @@ where
     fn as_simd(self, arch: T::Arch) -> T;
 }
 
+pub trait InterleavedLoadStore<const N: usize>: SIMDVector {
+
+    /// Load `<Self as SIMDVector>::LANES` number of elements starting at the provided
+    /// pointer with a four-way interleaved pattern.
+    ///
+    /// There are no alignment requirements on `ptr`.
+    ///
+    /// # Safety
+    ///
+    /// A contiguous read of `<Self as SIMDVector>::LANES` must touch valid memory.
+    unsafe fn load_deinterleaved(arch: Self::Arch, ptr: *const <Self as SIMDVector>::Scalar) -> [Self; N];
+
+    /// Store `<Self as SIMDVector>::LANES` number of elements with an N-way interleaved
+    /// pattern starting at the provided pointer.
+    ///
+    /// There are no alignment requirements on `ptr`.
+    ///
+    /// # Safety
+    ///
+    /// The pointed-to memory must adhere to Rust's exclusive reference rules.
+    ///
+    /// A contiguous store of `<Self as SIMDVector>::LANES` * N must touch valid memory.
+    unsafe fn store_interleaved(vectors: [Self; N], ptr: *mut <Self as SIMDVector>::Scalar);
+}
+
 /// A logical mask for SIMD operations.
 ///
 /// The representation of this type varies between architectures and micro-architectures.
