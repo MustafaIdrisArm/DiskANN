@@ -79,10 +79,10 @@
 //! |               |               | `       ` |           |               |           |           |
 //! | `TSlice<4>`   | `USlice<1>`   | `MV<u32>` | Optimized | Optimized     | Optimized | Optimized |
 //! |               |               | `       ` |           |               |           |           |
-//! | `&[f32]`      | `USlice<1>`   | `MV<f32>` | Fallback  | Yes           | Uses V3   | Fallback  |
-//! | `&[f32]`      | `USlice<2>`   | `MV<f32>` | Fallback  | Yes           | Uses V3   | Fallback  |
+//! | `&[f32]`      | `USlice<1>`   | `MV<f32>` | Fallback  | Yes           | Uses V3   | Optimized |
+//! | `&[f32]`      | `USlice<2>`   | `MV<f32>` | Fallback  | Yes           | Uses V3   | Optimized |
 //! | `&[f32]`      | `USlice<3>`   | `MV<f32>` | Fallback  | No            | Uses V3   | Fallback  |
-//! | `&[f32]`      | `USlice<4>`   | `MV<f32>` | Fallback  | Yes           | Uses V3   | Fallback  |
+//! | `&[f32]`      | `USlice<4>`   | `MV<f32>` | Fallback  | Yes           | Uses V3   | Optimized |
 //! | `&[f32]`      | `USlice<5>`   | `MV<f32>` | Fallback  | No            | Uses V3   | Fallback  |
 //! | `&[f32]`      | `USlice<6>`   | `MV<f32>` | Fallback  | No            | Uses V3   | Fallback  |
 //! | `&[f32]`      | `USlice<7>`   | `MV<f32>` | Fallback  | No            | Uses V3   | Fallback  |
@@ -115,9 +115,7 @@ use diskann_wide::{
 };
 
 #[cfg(target_arch = "aarch64")]
-use diskann_wide::{
-    SIMDDotProduct, SIMDMulAdd, SIMDPartialEq, SIMDSelect, SIMDSumTree, SIMDVector,
-};
+use diskann_wide::{SIMDDotProduct, SIMDMulAdd, SIMDSumTree, SIMDVector};
 
 use super::{Binary, BitSlice, BitTranspose, Dense, Representation, Unsigned};
 use crate::distances::{Hamming, InnerProduct, MV, MathematicalResult, SquaredL2, check_lengths};
@@ -2895,15 +2893,13 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         x: &[f32],
         y: USlice<'_, 1>,
     ) -> MathematicalResult<f32> {
-        use std::arch::aarch64::vzip1_u8;
+        use std::arch::aarch64::{vcreate_u8, vld4q_f32, vzip1_u8};
         // returns number of quantized vectors
         let len = check_lengths!(x, y)?;
 
         #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
-        type u16s_8 = diskann_wide::arch::aarch64::u16x8;
-        diskann_wide::alias!(u8s_16 = <diskann_wide::arch::aarch64::Neon>::u8x16);
-        diskann_wide::alias!(u32s_8 = <diskann_wide::arch::aarch64::Neon>::u32x8);
+        diskann_wide::alias!(f32s_4 = <diskann_wide::arch::aarch64::Neon>::f32x4);
         diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
 
         let px_f32: *const f32 = x.as_ptr();
@@ -2912,76 +2908,87 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         let mut i = 0;
         let mut s: f32 = 0.0;
 
-        #[inline(always)]
-        fn interleave_four_bits(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_8 {
-            let vec1: u8s_8 = input;
-            let vec2: u8s_8 = input>>4;
-            u8s_8::from_underlying (
-                arch,
-                unsafe {  vzip1_u8(vec1.to_underlying(), vec2.to_underlying()) }
-            )
-        }
-
-        #[inline(always)]
-        fn interleave_two_bits(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_8 {
-            let four_bit_vec = interleave_four_bits(input, arch);
-            let vec1: u8s_8 = four_bit_vec;
-            let vec2: u8s_8 = four_bit_vec>>2;
-            u8s_8::from_underlying (
-                arch,
-                unsafe {  vzip1_u8(vec1.to_underlying(), vec2.to_underlying()) }
-            )
-        }
-
-        #[inline(always)]
-        fn interleave_one_bit(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_8 {
-            let two_bit_vec: u8s_8 = interleave_two_bits(input, arch);
-            let vec1: u8s_8 = two_bit_vec;
-            let vec2: u8s_8 = two_bit_vec>>1;
-            u8s_8::from_underlying (
-                arch,
-                unsafe {  vzip1_u8(vec1.to_underlying(), vec2.to_underlying()) }
-            ) & u8s_8::splat(arch, 0x01)
-        }
-
         let y_bytes = len / 8; // number of y bytes over the underlying slice
         if i < y_bytes {
             let mut s0 = f32s_8::default(arch);
+            let mut s1 = f32s_8::default(arch);
+            let mut s2 = f32s_8::default(arch);
+            let mut s3 = f32s_8::default(arch);
 
-            while i + 1 <= y_bytes {
-                // SAFETY: `i + 1 <= y_bytes` guarantees that 1 byte from `py_u8` are readable at offset `i`.
-                let y_element: u8 = unsafe { py_u8.add(i).read_unaligned() };
-                let y_vec: u8s_8 = interleave_one_bit(u8s_8::splat(arch, y_element), arch);
-                let y_vec_u16s: u16s_8 = y_vec.into();
-                let y_vec_f32s: f32s_8 = y_vec_u16s.into();
-
-                // SAFETY: i + 1 <= y_bytes ==> 32*i+32 <= x_bytes
-                // but .add multiplies by the size of f32 (4 bytes)
-                // therefore, 8*i+8 <= x_elements which guarrantees that we can read
-                // 8 f32 elements from offset 8*i
-                let x_vec = unsafe { f32s_8::load_simd(arch, px_f32.add(8*i)) };
-
-                // add to accumulate first 4 results
-                s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
-
-                i+=1;
+            #[inline(always)]
+            fn load_deinterleaved_32_f32(
+                ptr: *const f32,
+                arch: diskann_wide::arch::aarch64::Neon,
+            ) -> (f32s_8, f32s_8, f32s_8, f32s_8) {
+                // SAFETY: The caller guarantees that `ptr` is valid for 32 consecutive
+                // `f32` values. Each structured load reads 16 values.
+                let (lo, hi) = unsafe { (vld4q_f32(ptr), vld4q_f32(ptr.add(16))) };
+                (
+                    f32s_8::new(
+                        f32s_4::from_underlying(arch, lo.0),
+                        f32s_4::from_underlying(arch, hi.0),
+                    ),
+                    f32s_8::new(
+                        f32s_4::from_underlying(arch, lo.1),
+                        f32s_4::from_underlying(arch, hi.1),
+                    ),
+                    f32s_8::new(
+                        f32s_4::from_underlying(arch, lo.2),
+                        f32s_4::from_underlying(arch, hi.2),
+                    ),
+                    f32s_8::new(
+                        f32s_4::from_underlying(arch, lo.3),
+                        f32s_4::from_underlying(arch, hi.3),
+                    ),
+                )
             }
-            s = s0.sum_tree() as f32;
+
+            let mask = u8s_8::splat(arch, 0x01);
+
+            while i + 4 <= y_bytes {
+                // SAFETY: The loop condition guarantees that four bytes are readable.
+                let y_word = unsafe { py_u8.add(i).cast::<u32>().read_unaligned() };
+                // SAFETY: `vcreate_u8` only moves the provided bits into a NEON register;
+                // `arch` proves that NEON instructions are available.
+                let y_vec = u8s_8::from_underlying(arch, unsafe { vcreate_u8(y_word.into()) });
+                // SAFETY: `arch` proves that the NEON `vzip1_u8` instruction is available.
+                let y_vec_zipped = u8s_8::from_underlying(arch, unsafe {
+                    vzip1_u8(y_vec.to_underlying(), (y_vec >> 4).to_underlying())
+                });
+
+                let y_vec1: f32s_8 = (y_vec_zipped & mask).into();
+                let y_vec2: f32s_8 = ((y_vec_zipped >> 1) & mask).into();
+                let y_vec3: f32s_8 = ((y_vec_zipped >> 2) & mask).into();
+                let y_vec4: f32s_8 = ((y_vec_zipped >> 3) & mask).into();
+
+                // Four packed bytes represent 32 logical elements, so the loop condition
+                // guarantees that 32 `f32` values are readable from this position.
+                // SAFETY: The loop condition establishes that `8 * i < x.len()`.
+                let x_base = unsafe { px_f32.add(8 * i) };
+                let (x_vec1, x_vec2, x_vec3, x_vec4) = load_deinterleaved_32_f32(x_base, arch);
+
+                s0 = x_vec1.mul_add_simd(y_vec1, s0);
+                s1 = x_vec2.mul_add_simd(y_vec2, s1);
+                s2 = x_vec3.mul_add_simd(y_vec3, s2);
+                s3 = x_vec4.mul_add_simd(y_vec4, s3);
+
+                i += 4;
+            }
+            s = ((s0 + s1) + (s2 + s3)).sum_tree();
         }
 
         // converting from y bytes to logical elements.
         i *= 8;
 
-        // Deal with the remainder the slow way (at most 7 element).
-        debug_assert!(len - i <= 7);
+        // Deal with the remainder the slow way (at most 31 elements).
+        debug_assert!(len - i <= 31);
         if i != len {
             #[inline(never)]
             fn fallback(x: &[f32], y: USlice<'_, 1>, from: usize) -> f32 {
                 let mut s: f32 = 0.0;
                 for i in from..x.len() {
                     // SAFETY: `i` is in `from..x.len()`, which equals `y.len()`.
-                    let (ix, iy) =
-                        unsafe { (*x.get_unchecked(i) as f32, y.get_unchecked(i) as f32) };
+                    let (ix, iy) = unsafe { (*x.get_unchecked(i), y.get_unchecked(i) as f32) };
                     s += ix * iy;
                 }
                 s
@@ -3019,7 +3026,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         let mut s: f32 = 0.0;
 
         let y_bytes = len / 4; // number of y blocks over the underlying slice
-        if i + 1 <= y_bytes {
+        if i < y_bytes {
             let mut s0 = f32s_8::default(arch);
             let mut s1 = f32s_8::default(arch);
             let mut s2 = f32s_8::default(arch);
@@ -3028,44 +3035,35 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
             let mask = u8s_8::splat(arch, 0x03);
 
             while i + 8 <= y_bytes {
+                // SAFETY: The loop condition guarantees that eight packed bytes are readable.
                 let y_vec = unsafe { u8s_8::load_simd(arch, py_u8.add(i)) };
 
+                // SAFETY: Eight packed bytes represent 32 logical values, and the loop
+                // condition therefore establishes that `4 * i < x.len()`.
                 let x_base = unsafe { px_f32.add(4 * i) };
-                let (x_lo, x_hi) = unsafe {
-                    (vld4q_f32(x_base), vld4q_f32(x_base.add(16)))
-                };
+                // SAFETY: The loop condition guarantees 32 readable `f32` values at
+                // `x_base`; each structured load consumes 16 values.
+                let (x_lo, x_hi) = unsafe { (vld4q_f32(x_base), vld4q_f32(x_base.add(16))) };
 
-                let x_vec0 = f32s_8::from_underlying(
-                    arch,
-                    (x_lo.0, x_hi.0),
-                );
+                let x_vec0 = f32s_8::from_underlying(arch, (x_lo.0, x_hi.0));
                 let y_vec0: f32s_8 = (y_vec & mask).into();
                 s0 = x_vec0.mul_add_simd(y_vec0, s0);
 
-                let x_vec1 = f32s_8::from_underlying(
-                    arch,
-                    (x_lo.1, x_hi.1),
-                );
+                let x_vec1 = f32s_8::from_underlying(arch, (x_lo.1, x_hi.1));
                 let y_vec1: f32s_8 = ((y_vec >> 2) & mask).into();
                 s1 = x_vec1.mul_add_simd(y_vec1, s1);
 
-                let x_vec2 = f32s_8::from_underlying(
-                    arch,
-                    (x_lo.2, x_hi.2),
-                );
+                let x_vec2 = f32s_8::from_underlying(arch, (x_lo.2, x_hi.2));
                 let y_vec2: f32s_8 = ((y_vec >> 4) & mask).into();
                 s2 = x_vec2.mul_add_simd(y_vec2, s2);
 
-                let x_vec3 = f32s_8::from_underlying(
-                    arch,
-                    (x_lo.3, x_hi.3),
-                );
+                let x_vec3 = f32s_8::from_underlying(arch, (x_lo.3, x_hi.3));
                 let y_vec3: f32s_8 = ((y_vec >> 6) & mask).into();
                 s3 = x_vec3.mul_add_simd(y_vec3, s3);
 
                 i += 8;
             }
-            s = ((s0+s1)+(s2+s3)).sum_tree() as f32;
+            s = ((s0 + s1) + (s2 + s3)).sum_tree();
         }
 
         // converting from y blocks to logical elements.
@@ -3079,8 +3077,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 let mut s: f32 = 0.0;
                 for i in from..x.len() {
                     // SAFETY: `i` is in `from..x.len()`, which equals `y.len()`.
-                    let (ix, iy) =
-                        unsafe { (*x.get_unchecked(i) as f32, y.get_unchecked(i) as f32) };
+                    let (ix, iy) = unsafe { (*x.get_unchecked(i), y.get_unchecked(i) as f32) };
                     s += ix * iy;
                 }
                 s
@@ -3123,57 +3120,52 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         fn split_and_zip_four_bit(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_16 {
             use diskann_wide::{LoHi, ZipUnzip};
             let lo = input;
-            let hi = input>>4;
+            let hi = input >> 4;
             let zipped = u8s_16::zip(LoHi::new(lo, hi));
             let mask = u8s_16::splat(arch, 0x0f);
             zipped & mask
         }
 
         let y_bytes = len / 2; // number of y blocks over the underlying slice
-        if i + 1 <= y_bytes {
+        if i < y_bytes {
             let mut s0 = f32s_16::default(arch);
 
             while i + 8 <= y_bytes {
-                // SAFETY: `i + 1 <= y_blocks` guarantees that 8 bytes from `py_u16` are readable at offset `i` elements.
+                // SAFETY: The loop condition guarantees eight readable packed bytes.
                 let y_vec = unsafe { u8s_8::load_simd(arch, py_u8.add(i)) };
                 let y_vec: u8s_16 = split_and_zip_four_bit(y_vec, arch);
                 let y_vec_f32s: f32s_16 = y_vec.into();
 
-                // SAFETY: i + 1 <= y_blocks ==> 16*i+16 <= x_bytes
-                // but .add multiplies by the size of f32 (4 bytes)
-                // compared to u16 which is 2 bytes.
-                // therefore, 8*i+8 <= x_elements which guarrantees that we can read
-                // 8 f32 elements from offset 8*i
-                let x_vec = unsafe { f32s_16::load_simd(arch, px_f32.add(2*i)) };
+                // SAFETY: Eight packed bytes represent 16 logical values, so the loop
+                // condition guarantees 16 readable `f32` values at offset `2 * i`.
+                let x_vec = unsafe { f32s_16::load_simd(arch, px_f32.add(2 * i)) };
 
-
-
-                // add to accumulate first 4 results
                 s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
 
-                i+=8;
+                i += 8;
             }
 
-            let remaining_y_bytes = len/2 - i;
+            let remaining_y_bytes = len / 2 - i;
 
             if remaining_y_bytes > 0 {
-                // SAFETY: `i + 1 <= y_blocks` guarantees that 8 bytes from `py_u16` are readable at offset `i` elements.
-                let y_vec = unsafe { u8s_8::load_simd_first(arch, py_u8.add(i), remaining_y_bytes) };
+                // SAFETY: `remaining_y_bytes` is in `1..8`, and that many packed bytes
+                // remain readable at offset `i`.
+                let y_vec =
+                    unsafe { u8s_8::load_simd_first(arch, py_u8.add(i), remaining_y_bytes) };
                 let y_vec: u8s_16 = split_and_zip_four_bit(y_vec, arch);
                 let y_vec_f32s: f32s_16 = y_vec.into();
 
-                // SAFETY: i + 1 <= y_blocks ==> 16*i+16 <= x_bytes
-                // but .add multiplies by the size of f32 (4 bytes)
-                // compared to u16 which is 2 bytes.
-                // therefore, 8*i+8 <= x_elements which guarrantees that we can read
-                // 8 f32 elements from offset 8*i
-                let x_vec = unsafe { f32s_16::load_simd_first(arch, px_f32.add(2*i), remaining_y_bytes * 2) };
+                // SAFETY: Every remaining packed byte represents two logical values, so
+                // `remaining_y_bytes * 2` values remain readable at offset `2 * i`.
+                let x_vec = unsafe {
+                    f32s_16::load_simd_first(arch, px_f32.add(2 * i), remaining_y_bytes * 2)
+                };
 
                 s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
 
-                i+=remaining_y_bytes;
+                i += remaining_y_bytes;
             }
-            s = s0.sum_tree() as f32;
+            s = s0.sum_tree();
         }
 
         // converting from y bytes to logical elements.
@@ -3187,8 +3179,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 let mut s: f32 = 0.0;
                 for i in from..x.len() {
                     // SAFETY: `i` is in `from..x.len()`, which equals `y.len()`.
-                    let (ix, iy) =
-                        unsafe { (*x.get_unchecked(i) as f32, y.get_unchecked(i) as f32) };
+                    let (ix, iy) = unsafe { (*x.get_unchecked(i), y.get_unchecked(i) as f32) };
                     s += ix * iy;
                 }
                 s

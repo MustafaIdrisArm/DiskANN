@@ -12,9 +12,9 @@ use super::{
     constant::Const,
     reference::{ReferenceAbs, ReferenceCast, ReferenceIntegerOps, ReferenceScalarOps, TreeReduce},
     traits::{
-        ArrayType, SIMDAbs, SIMDCast, SIMDDotProduct, SIMDMask, SIMDMinMax, SIMDMulAdd,
-        SIMDPartialEq, SIMDPartialOrd, SIMDPopcount, SIMDReinterpret, SIMDSelect, SIMDSumTree,
-        SIMDVector,
+        ArrayType, InterleavedLoadStore, SIMDAbs, SIMDCast, SIMDDotProduct, SIMDMask, SIMDMinMax,
+        SIMDMulAdd, SIMDPartialEq, SIMDPartialOrd, SIMDPopcount, SIMDReinterpret, SIMDSelect,
+        SIMDSumTree, SIMDVector,
     },
 };
 
@@ -777,6 +777,34 @@ impl_zipunzip!(u8, 32 => 16);
 impl_zipunzip!(u32, 8 => 4);
 impl_zipunzip!(f16, 16 => 8);
 
+impl<T, const N: usize, const STRIDE: usize, A> InterleavedLoadStore<STRIDE> for Emulated<T, N, A>
+where
+    T: Copy + std::fmt::Debug + Default,
+    Const<N>: ArrayType<T, Type = [T; N]>,
+    BitMask<N, A>: SIMDMask<Arch = A>,
+    A: arch::Sealed,
+{
+    #[inline(always)]
+    unsafe fn load_deinterleaved(arch: A, ptr: *const T) -> [Self; STRIDE] {
+        core::array::from_fn(|stream| {
+            Self::from_arch_fn(arch, |lane| {
+                // SAFETY: The caller guarantees `STRIDE * N` readable elements.
+                unsafe { ptr.add(lane * STRIDE + stream).read_unaligned() }
+            })
+        })
+    }
+
+    #[inline(always)]
+    unsafe fn store_interleaved(vectors: [Self; STRIDE], ptr: *mut T) {
+        for (stream, vector) in vectors.into_iter().enumerate() {
+            for (lane, value) in vector.0.into_iter().enumerate() {
+                // SAFETY: The caller guarantees `STRIDE * N` writable elements.
+                unsafe { ptr.add(lane * STRIDE + stream).write_unaligned(value) };
+            }
+        }
+    }
+}
+
 ///////////
 // Tests //
 ///////////
@@ -855,6 +883,14 @@ mod test_emulated {
         test_utils::test_store_simd::<i32, 2, Emulated<i32, 2>>(Scalar);
         test_utils::test_store_simd::<i32, 4, Emulated<i32, 4>>(Scalar);
         test_utils::test_store_simd::<i32, 8, Emulated<i32, 8>>(Scalar);
+    }
+
+    #[test]
+    fn test_interleaved_load_store() {
+        test_utils::test_deinterleaved_load::<u8, 16, 2, Emulated<u8, 16>>(Scalar);
+        test_utils::test_interleaved_store::<u8, 16, 2, Emulated<u8, 16>>(Scalar);
+        test_utils::test_deinterleaved_load::<u8, 16, 4, Emulated<u8, 16>>(Scalar);
+        test_utils::test_interleaved_store::<u8, 16, 4, Emulated<u8, 16>>(Scalar);
     }
 
     // Only test a subset of constructors as all `Emulated` have the same implementation.

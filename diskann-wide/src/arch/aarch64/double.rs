@@ -8,7 +8,7 @@ use std::arch::aarch64::*;
 use half::f16;
 
 use crate::{
-    LoHi, SplitJoin,
+    LoHi, SIMDVector, SplitJoin, ZipUnzip,
     doubled::{self, Doubled},
 };
 
@@ -90,6 +90,35 @@ super::macros::aarch64_zipunzip!(u8x16, vzip1q_u8, vzip2q_u8, vuzp1q_u8, vuzp2q_
 super::macros::aarch64_zipunzip!(u32x4, vzip1q_u32, vzip2q_u32, vuzp1q_u32, vuzp2q_u32);
 super::macros::aarch64_zipunzip!(f16x8, vzip1q_u16, vzip2q_u16, vuzp1q_u16, vuzp2q_u16);
 
+impl ZipUnzip for u8x16 {
+    #[inline(always)]
+    fn zip(halves: LoHi<<Self as SplitJoin>::Halved>) -> Self {
+        // SAFETY: The intrinsics operate on the `u8` lanes represented by both halves.
+        unsafe {
+            let lo_raw = halves.lo.to_underlying();
+            let hi_raw = halves.hi.to_underlying();
+            Self::join(LoHi::new(
+                u8x8::from_underlying(halves.lo.arch(), vzip1_u8(lo_raw, hi_raw)),
+                u8x8::from_underlying(halves.lo.arch(), vzip2_u8(lo_raw, hi_raw)),
+            ))
+        }
+    }
+
+    #[inline(always)]
+    fn unzip(self) -> LoHi<<Self as SplitJoin>::Halved> {
+        // SAFETY: The intrinsics operate on the `u8` lanes represented by both halves.
+        unsafe {
+            let halves = self.split();
+            let lo_raw = halves.lo.to_underlying();
+            let hi_raw = halves.hi.to_underlying();
+            LoHi::new(
+                u8x8::from_underlying(self.arch(), vuzp1_u8(lo_raw, hi_raw)),
+                u8x8::from_underlying(self.arch(), vuzp2_u8(lo_raw, hi_raw)),
+            )
+        }
+    }
+}
+
 //-------------//
 // Conversions //
 //-------------//
@@ -140,22 +169,6 @@ impl From<i8x32> for i16x32 {
     }
 }
 
-impl From<u8x8> for u32x8 {
-    #[inline(always)]
-    fn from(value: u8x8) -> Self {
-        let arch = value.arch();
-
-        unsafe {
-            let u16s = vmovl_u8(value.to_underlying());
-
-            Self::new(
-                u32x4::from_underlying(arch, vmovl_u16(vget_low_u16(u16s))),
-                u32x4::from_underlying(arch, vmovl_u16(vget_high_u16(u16s))),
-            )
-        }
-    }
-}
-
 impl From<u8x8> for u16x8 {
     #[inline(always)]
     fn from(value: u8x8) -> Self {
@@ -179,6 +192,8 @@ impl From<u16x8> for f32x8 {
     fn from(value: u16x8) -> Self {
         let arch = value.arch();
 
+        // SAFETY: The widening conversions and integer-to-float conversions operate on
+        // matching lane types and are available with the `Neon` witness.
         unsafe {
             Self::new(
                 f32x4::from_underlying(
@@ -301,6 +316,11 @@ mod tests {
     }
 
     // u8s
+    mod test_u8x16 {
+        use super::*;
+        test_utils::ops::test_zipunzip!(u8x16 => u8x8, 0x78c92a4fe135db60, test_neon());
+    }
+
     mod test_u8x32 {
         use super::*;
         standard_tests!(u8x32, u8, 32);
