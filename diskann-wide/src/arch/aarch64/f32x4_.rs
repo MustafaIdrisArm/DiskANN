@@ -28,6 +28,38 @@ macros::aarch64_define_register!(f32x4, float32x4_t, mask32x4, f32, 4, Neon);
 macros::aarch64_define_splat!(f32x4, vmovq_n_f32);
 macros::aarch64_define_loadstore!(f32x4, vld1q_f32, internal::load_first::f32x4, vst1q_f32, 4);
 macros::aarch64_splitjoin!(f32x4, f32x2, vget_low_f32, vget_high_f32, vcombine_f32);
+macros::aarch64_interleaved_loadstore!(
+    f32x4,
+    2,
+    vld2q_f32,
+    vst2q_f32,
+    |arch, raw: float32x4x2_t| [
+        Self::from_underlying(arch, raw.0),
+        Self::from_underlying(arch, raw.1),
+    ],
+    |vectors: [f32x4; 2], | float32x4x2_t(
+        vectors[0].to_underlying(),
+        vectors[1].to_underlying(),
+    )
+);
+macros::aarch64_interleaved_loadstore!(
+    f32x4,
+    4,
+    vld4q_f32,
+    vst4q_f32,
+    |arch, raw: float32x4x4_t| [
+        Self::from_underlying(arch, raw.0),
+        Self::from_underlying(arch, raw.1),
+        Self::from_underlying(arch, raw.2),
+        Self::from_underlying(arch, raw.3),
+    ],
+    |vectors: [f32x4; 4], | float32x4x4_t(
+        vectors[0].to_underlying(),
+        vectors[1].to_underlying(),
+        vectors[2].to_underlying(),
+        vectors[3].to_underlying(),
+    )
+);
 
 helpers::unsafe_map_binary_op!(f32x4, std::ops::Add, add, vaddq_f32, "neon");
 helpers::unsafe_map_binary_op!(f32x4, std::ops::Sub, sub, vsubq_f32, "neon");
@@ -182,6 +214,14 @@ mod tests {
     fn miri_test_store() {
         if let Some(arch) = test_neon() {
             test_utils::test_store_simd::<f32, 4, f32x4>(arch);
+        }
+    }
+
+    #[test]
+    fn test_interleaved_load_store() {
+        if let Some(arch) = test_neon() {
+            test_utils::test_deinterleaved_load::<f32, 4, 4, f32x4>(arch);
+            test_utils::test_interleaved_store::<f32, 4, 4, f32x4>(arch);
         }
     }
 

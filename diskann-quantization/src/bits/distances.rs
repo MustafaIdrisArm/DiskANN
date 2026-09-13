@@ -115,7 +115,7 @@ use diskann_wide::{
 };
 
 #[cfg(target_arch = "aarch64")]
-use diskann_wide::{SIMDDotProduct, SIMDMulAdd, SIMDSumTree, SIMDVector};
+use diskann_wide::{InterleavedLoadStore, SIMDDotProduct, SIMDMulAdd, SIMDSumTree, SIMDVector};
 
 use super::{Binary, BitSlice, BitTranspose, Dense, Representation, Unsigned};
 use crate::distances::{Hamming, InnerProduct, MV, MathematicalResult, SquaredL2, check_lengths};
@@ -3105,8 +3105,8 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
 
         #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
-        #[allow(non_camel_case_types)]
-        type u8s_16 = diskann_wide::arch::aarch64::u8x16;
+        diskann_wide::alias!(u8s_16 = <diskann_wide::arch::aarch64::Neon>::u8x16);
+        diskann_wide::alias!(f32s_4 = <diskann_wide::arch::aarch64::Neon>::f32x4);
         diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
         diskann_wide::alias!(f32s_16 = <diskann_wide::arch::aarch64::Neon>::f32x16);
 
@@ -3116,56 +3116,71 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         let mut i = 0;
         let mut s: f32 = 0.0;
 
-        #[inline(always)]
-        fn split_and_zip_four_bit(input: u8s_8, arch: diskann_wide::arch::aarch64::Neon) -> u8s_16 {
-            use diskann_wide::{LoHi, ZipUnzip};
-            let lo = input;
-            let hi = input >> 4;
-            let zipped = u8s_16::zip(LoHi::new(lo, hi));
-            let mask = u8s_16::splat(arch, 0x0f);
-            zipped & mask
-        }
-
         let y_bytes = len / 2; // number of y blocks over the underlying slice
         if i < y_bytes {
-            let mut s0 = f32s_16::default(arch);
+            let mut s0 = f32s_8::default(arch);
+            let mut s1 = f32s_8::default(arch);
+            let mask = u8s_8::splat(arch, 0x0f);
 
             while i + 8 <= y_bytes {
                 // SAFETY: The loop condition guarantees eight readable packed bytes.
                 let y_vec = unsafe { u8s_8::load_simd(arch, py_u8.add(i)) };
-                let y_vec: u8s_16 = split_and_zip_four_bit(y_vec, arch);
-                let y_vec_f32s: f32s_16 = y_vec.into();
-
                 // SAFETY: Eight packed bytes represent 16 logical values, so the loop
                 // condition guarantees 16 readable `f32` values at offset `2 * i`.
-                let x_vec = unsafe { f32s_16::load_simd(arch, px_f32.add(2 * i)) };
+                let [
+                    x_vec_1, x_vec_2
+                ] = unsafe { f32s_4::load_deinterleaved(arch, px_f32.add(2 * i)) };
+                // SAFETY: Eight packed bytes represent 16 logical values, so the loop
+                // condition guarantees 16 readable `f32` values at offset `2 * i`.
+                let [
+                    x_vec_3, x_vec_4
+                ] = unsafe { f32s_4::load_deinterleaved(arch, px_f32.add(2 * i + 8)) };
 
-                s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
+                let x_vec_even = f32s_8::new(x_vec_1, x_vec_3);
+                let x_vec_odd = f32s_8::new(x_vec_2, x_vec_4);
+
+
+                let y_vec_even: f32s_8 = (y_vec & mask).into();
+                let y_vec_odd: f32s_8 = (y_vec >> 4).into();
+
+                s0 = x_vec_even.mul_add_simd(y_vec_even, s0);
+                s1 = x_vec_odd.mul_add_simd(y_vec_odd, s1);
 
                 i += 8;
             }
+            
+            #[inline(always)]
+            fn split_and_zip(input: u8s_8) -> u8s_16 {
+                use diskann_wide::{LoHi, ZipUnzip};
+                let zipped = u8s_16::zip(LoHi::new(input,input>>4));
+                zipped & u8s_16::splat(input.arch(), 0x0f)
+            }
 
             let remaining_y_bytes = len / 2 - i;
+            
+            let mut s_grouped = f32s_16::new(
+                s0, s1,
+            );
 
+            // remainder uses a  different approach since diskann wide
+            // does not provide a method for variable length de-interleaved loads
             if remaining_y_bytes > 0 {
                 // SAFETY: `remaining_y_bytes` is in `1..8`, and that many packed bytes
                 // remain readable at offset `i`.
-                let y_vec =
+                let y_vec_u8s_8 =
                     unsafe { u8s_8::load_simd_first(arch, py_u8.add(i), remaining_y_bytes) };
-                let y_vec: u8s_16 = split_and_zip_four_bit(y_vec, arch);
-                let y_vec_f32s: f32s_16 = y_vec.into();
+                let y_vec_u8s_16 = split_and_zip(y_vec_u8s_8);
+                let y_vec: f32s_16 = y_vec_u8s_16.into();
 
                 // SAFETY: Every remaining packed byte represents two logical values, so
                 // `remaining_y_bytes * 2` values remain readable at offset `2 * i`.
-                let x_vec = unsafe {
-                    f32s_16::load_simd_first(arch, px_f32.add(2 * i), remaining_y_bytes * 2)
-                };
+                let x_vec = unsafe { f32s_16::load_simd_first(arch, px_f32.add(2 * i), remaining_y_bytes * 2) };
 
-                s0 = x_vec.mul_add_simd(y_vec_f32s, s0);
+                s_grouped = x_vec.mul_add_simd(y_vec, s_grouped);
 
                 i += remaining_y_bytes;
             }
-            s = s0.sum_tree();
+            s = s_grouped.sum_tree();
         }
 
         // converting from y bytes to logical elements.
