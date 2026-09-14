@@ -2945,6 +2945,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
             }
 
             let mask = u8s_8::splat(arch, 0x01);
+            let shifts = u8s_8::from_array(arch, [0, 1, 2, 3, 4, 5, 6, 7]);
 
             while i + 4 <= y_bytes {
                 // SAFETY: The loop condition guarantees that four bytes are readable.
@@ -2976,20 +2977,18 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 i += 4;
             }
             
-            while i <= y_bytes {
+            while i < y_bytes {
                 // SAFETY: The loop condition guarantees that one byte is readable.
-                let y_word = unsafe { py_u8.add(i).cast::<u8>().read_unaligned() };
+                let y_word = unsafe { *py_u8.add(i) };
                 // SAFETY: `vcreate_u8` only moves the provided bits into a NEON register;
                 // `arch` proves that NEON instructions are available.
                 let y_words = u8s_8::splat(arch, y_word);
-                let shifts = u8s_8::from_array(arch, [0, 1, 2, 3, 4, 5, 6, 7]);
                 let y_vec: f32s_8 = ((y_words >> shifts) & mask).into();
                     
                 // SAFETY: The loop condition guarantees that 8 logical elements can be read.
                 let x_vec = unsafe { f32s_8::load_simd(arch, px_f32.add(8 * i))};
 
                 s0 = x_vec.mul_add_simd(y_vec, s0);
-                
                 i += 1;
             }
             s = ((s0 + s1) + (s2 + s3)).sum_tree();
@@ -3035,7 +3034,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
         #[allow(non_camel_case_types)]
-        type u16s_4 = diskann_wide::arch::aarch64::u16x4;
+        type u16s_8 = diskann_wide::arch::aarch64::u16x8;
         diskann_wide::alias!(f32s_4 = <diskann_wide::arch::aarch64::Neon>::f32x4);
         diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
 
@@ -3087,19 +3086,13 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
 
             // remainder uses a  different approach since diskann wide
             // does not provide a method for variable length de-interleaved loads
-            while i + 1 <= y_bytes {
-                let mask_u16 = u16s_4::splat(arch, 0x0003);
-                let y_raw = u16s_4::splat(arch, unsafe {py_u8.add(i).cast::<u16>().read_unaligned()});
-                let shifts = u16s_4::from_array(arch, [0, 2, 4, 6]);
-                let y_vec: f32s_4 = ((y_raw >> shifts) & mask_u16).into();
-                let x_vec = unsafe { f32s_4::load_simd(arch, px_f32.add(4*i)) };
-                use diskann_wide::SplitJoin;
-                let diskann_wide::LoHi {
-                    lo, hi
-                } = s0.split();
-                let lo = x_vec.mul_add_simd(y_vec, lo);
-                s0 = f32s_8::new(lo, hi);
-
+            while i + 1 < y_bytes {
+                let mask_u16 = u16s_8::splat(arch, 0x0003);
+                let y_raw = u16s_8::splat(arch, unsafe {py_u8.add(i).cast::<u16>().read_unaligned()});
+                let shifts = u16s_8::from_array(arch, [0, 2, 4, 6, 8, 10, 12, 14]);
+                let y_vec: f32s_8 = ((y_raw >> shifts) & mask_u16).into();
+                let x_vec = unsafe { f32s_8::load_simd(arch, px_f32.add(4*i)) };
+                s0 = x_vec.mul_add_simd(y_vec, s0);
                 i += 2;
             }
 
@@ -3110,8 +3103,8 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         // converting from y blocks to logical elements.
         i *= 4;
 
-        // Deal with the remainder the slow way (at most 3 elements).
-        debug_assert!(len - i <= 3);
+        // Deal with the remainder the slow way (at most 7 elements).
+        debug_assert!(len - i <= 7);
         if i != len {
             #[inline(never)]
             fn fallback(x: &[f32], y: USlice<'_, 2>, from: usize) -> f32 {
