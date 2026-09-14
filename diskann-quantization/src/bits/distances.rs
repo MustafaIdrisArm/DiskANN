@@ -2893,7 +2893,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         x: &[f32],
         y: USlice<'_, 1>,
     ) -> MathematicalResult<f32> {
-        use std::arch::aarch64::{vcreate_u8, vld4q_f32, vzip1_u8};
+        use std::arch::aarch64::{vcreate_u8, vzip1_u8};
         // returns number of quantized vectors
         let len = check_lengths!(x, y)?;
 
@@ -2917,28 +2917,29 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
 
             #[inline(always)]
             fn load_deinterleaved_32_f32(
-                ptr: *const f32,
                 arch: diskann_wide::arch::aarch64::Neon,
+                ptr: *const f32,
             ) -> (f32s_8, f32s_8, f32s_8, f32s_8) {
                 // SAFETY: The caller guarantees that `ptr` is valid for 32 consecutive
                 // `f32` values. Each structured load reads 16 values.
-                let (lo, hi) = unsafe { (vld4q_f32(ptr), vld4q_f32(ptr.add(16))) };
+                let lo: [_; 4] = unsafe { f32s_4::load_deinterleaved(arch, ptr)};
+                let hi: [_; 4] = unsafe { f32s_4::load_deinterleaved(arch, ptr.add(16))};
                 (
                     f32s_8::new(
-                        f32s_4::from_underlying(arch, lo.0),
-                        f32s_4::from_underlying(arch, hi.0),
+                        lo[0],
+                        hi[0],
                     ),
                     f32s_8::new(
-                        f32s_4::from_underlying(arch, lo.1),
-                        f32s_4::from_underlying(arch, hi.1),
+                        lo[1],
+                        hi[1],
                     ),
                     f32s_8::new(
-                        f32s_4::from_underlying(arch, lo.2),
-                        f32s_4::from_underlying(arch, hi.2),
+                        lo[2],
+                        hi[2],
                     ),
                     f32s_8::new(
-                        f32s_4::from_underlying(arch, lo.3),
-                        f32s_4::from_underlying(arch, hi.3),
+                        lo[3],
+                        hi[3],
                     ),
                 )
             }
@@ -2965,7 +2966,7 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 // guarantees that 32 `f32` values are readable from this position.
                 // SAFETY: The loop condition establishes that `8 * i < x.len()`.
                 let x_base = unsafe { px_f32.add(8 * i) };
-                let (x_vec1, x_vec2, x_vec3, x_vec4) = load_deinterleaved_32_f32(x_base, arch);
+                let (x_vec1, x_vec2, x_vec3, x_vec4) = load_deinterleaved_32_f32(arch, x_base);
 
                 s0 = x_vec1.mul_add_simd(y_vec1, s0);
                 s1 = x_vec2.mul_add_simd(y_vec2, s1);
@@ -2974,14 +2975,31 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
 
                 i += 4;
             }
+            
+            while i <= y_bytes {
+                // SAFETY: The loop condition guarantees that one byte is readable.
+                let y_word = unsafe { py_u8.add(i).cast::<u8>().read_unaligned() };
+                // SAFETY: `vcreate_u8` only moves the provided bits into a NEON register;
+                // `arch` proves that NEON instructions are available.
+                let y_words = u8s_8::splat(arch, y_word);
+                let shifts = u8s_8::from_array(arch, [0, 1, 2, 3, 4, 5, 6, 7]);
+                let y_vec: f32s_8 = ((y_words >> shifts) & mask).into();
+                    
+                // SAFETY: The loop condition guarantees that 8 logical elements can be read.
+                let x_vec = unsafe { f32s_8::load_simd(arch, px_f32.add(8 * i))};
+
+                s0 = x_vec.mul_add_simd(y_vec, s0);
+                
+                i += 1;
+            }
             s = ((s0 + s1) + (s2 + s3)).sum_tree();
         }
 
         // converting from y bytes to logical elements.
         i *= 8;
 
-        // Deal with the remainder the slow way (at most 31 elements).
-        debug_assert!(len - i <= 31);
+        // Deal with the remainder the slow way (at most 7 elements).
+        debug_assert!(len - i <= 7);
         if i != len {
             #[inline(never)]
             fn fallback(x: &[f32], y: USlice<'_, 1>, from: usize) -> f32 {
