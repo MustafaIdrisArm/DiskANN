@@ -3011,12 +3011,14 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
         x: &[f32],
         y: USlice<'_, 2>,
     ) -> MathematicalResult<f32> {
-        use std::arch::aarch64::vld4q_f32;
         // returns number of quantized vectors
         let len = check_lengths!(x, y)?;
 
         #[allow(non_camel_case_types)]
         type u8s_8 = diskann_wide::arch::aarch64::u8x8;
+        #[allow(non_camel_case_types)]
+        type u16s_4 = diskann_wide::arch::aarch64::u16x4;
+        diskann_wide::alias!(f32s_4 = <diskann_wide::arch::aarch64::Neon>::f32x4);
         diskann_wide::alias!(f32s_8 = <diskann_wide::arch::aarch64::Neon>::f32x8);
 
         let px_f32: *const f32 = x.as_ptr();
@@ -3043,34 +3045,55 @@ impl Target2<diskann_wide::arch::aarch64::Neon, MathematicalResult<f32>, &[f32],
                 let x_base = unsafe { px_f32.add(4 * i) };
                 // SAFETY: The loop condition guarantees 32 readable `f32` values at
                 // `x_base`; each structured load consumes 16 values.
-                let (x_lo, x_hi) = unsafe { (vld4q_f32(x_base), vld4q_f32(x_base.add(16))) };
+                let x_lo: [f32s_4; 4] = unsafe { f32s_4::load_deinterleaved(arch, x_base) };
+                let x_hi: [f32s_4; 4] = unsafe { f32s_4::load_deinterleaved(arch, x_base.add(16)) };
 
-                let x_vec0 = f32s_8::from_underlying(arch, (x_lo.0, x_hi.0));
-                let y_vec0: f32s_8 = (y_vec & mask).into();
-                s0 = x_vec0.mul_add_simd(y_vec0, s0);
+                let x_vec1 = f32s_8::new(x_lo[0], x_hi[0]);
+                let y_vec1: f32s_8 = (y_vec & mask).into();
+                s0 = x_vec1.mul_add_simd(y_vec1, s0);
 
-                let x_vec1 = f32s_8::from_underlying(arch, (x_lo.1, x_hi.1));
-                let y_vec1: f32s_8 = ((y_vec >> 2) & mask).into();
-                s1 = x_vec1.mul_add_simd(y_vec1, s1);
+                let x_vec2 = f32s_8::new(x_lo[1], x_hi[1]);
+                let y_vec2: f32s_8 = ((y_vec >> 2) & mask).into();
+                s1 = x_vec2.mul_add_simd(y_vec2, s1);
 
-                let x_vec2 = f32s_8::from_underlying(arch, (x_lo.2, x_hi.2));
-                let y_vec2: f32s_8 = ((y_vec >> 4) & mask).into();
-                s2 = x_vec2.mul_add_simd(y_vec2, s2);
+                let x_vec3 = f32s_8::new(x_lo[2], x_hi[2]);
+                let y_vec3: f32s_8 = ((y_vec >> 4) & mask).into();
+                s2 = x_vec3.mul_add_simd(y_vec3, s2);
 
-                let x_vec3 = f32s_8::from_underlying(arch, (x_lo.3, x_hi.3));
-                let y_vec3: f32s_8 = ((y_vec >> 6) & mask).into();
-                s3 = x_vec3.mul_add_simd(y_vec3, s3);
+                let x_vec4 = f32s_8::new(x_lo[3], x_hi[3]);
+                let y_vec4: f32s_8 = ((y_vec >> 6) & mask).into();
+                s3 = x_vec4.mul_add_simd(y_vec4, s3);
 
                 i += 8;
             }
+
+            // remainder uses a  different approach since diskann wide
+            // does not provide a method for variable length de-interleaved loads
+            while i + 1 <= y_bytes {
+                let mask_u16 = u16s_4::splat(arch, 0x0003);
+                let y_raw = u16s_4::splat(arch, unsafe {py_u8.add(i).cast::<u16>().read_unaligned()});
+                let shifts = u16s_4::from_array(arch, [0, 2, 4, 6]);
+                let y_vec: f32s_4 = ((y_raw >> shifts) & mask_u16).into();
+                let x_vec = unsafe { f32s_4::load_simd(arch, px_f32.add(4*i)) };
+                use diskann_wide::SplitJoin;
+                let diskann_wide::LoHi {
+                    lo, hi
+                } = s0.split();
+                let lo = x_vec.mul_add_simd(y_vec, lo);
+                s0 = f32s_8::new(lo, hi);
+
+                i += 2;
+            }
+
             s = ((s0 + s1) + (s2 + s3)).sum_tree();
+
         }
 
         // converting from y blocks to logical elements.
         i *= 4;
 
-        // Deal with the remainder the slow way (at most 31 elements).
-        debug_assert!(len - i <= 31);
+        // Deal with the remainder the slow way (at most 3 elements).
+        debug_assert!(len - i <= 3);
         if i != len {
             #[inline(never)]
             fn fallback(x: &[f32], y: USlice<'_, 2>, from: usize) -> f32 {

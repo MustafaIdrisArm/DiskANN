@@ -12,7 +12,7 @@ use crate::{
 
 // AArch64 masks
 use super::{
-    Neon, f16x4, f32x2, internal,
+    Neon, f16x4, f32x2, internal, u32x4, u16x4,
     macros::{self, AArchLoadStore, AArchSplat},
     masks::mask32x4,
 };
@@ -167,6 +167,21 @@ impl From<f16x4> for f32x4 {
             }
             Self(result)
         }
+    }
+}
+
+impl From<u32x4> for f32x4 {
+    #[inline(always)]
+    fn from(value: u32x4) -> Self {
+        Self::from_underlying(value.arch(), unsafe{ vcvtq_f32_u32(value.to_underlying()) })
+    }
+}
+
+impl From<u16x4> for f32x4 {
+    #[inline(always)]
+    fn from(value: u16x4) -> f32x4 {
+        let value_u32s: u32x4 = value.into();
+        value_u32s.into()
     }
 }
 
